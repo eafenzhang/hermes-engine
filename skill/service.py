@@ -29,10 +29,11 @@ class SkillService:
         return skill.to_dict() if skill else None
 
     def create(self, name: str, description: str, content: str, tags: list[str] | None = None, overwrite: bool = False) -> dict[str, Any]:
-        fpath = self.creator.create(name, description, content, tags, overwrite)
-        # Re-scan to pick up the new skill
-        skill = self.loader._load_file(fpath)
-        return skill.to_dict() if skill else {"name": name, "path": str(fpath)}
+        self.creator.create(name, description, content, tags, overwrite)
+        # Re-scan to pick up the new skill in the in-memory cache
+        self.scan()
+        skill = self.loader.get(name)
+        return skill.to_dict() if skill else {"name": name}
 
     def delete(self, name: str) -> bool:
         removed = self.creator.delete(name)

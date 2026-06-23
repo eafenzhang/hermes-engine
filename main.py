@@ -9,8 +9,6 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
-
 from config.settings import Settings
 from shared.errors import (
     ServiceError,
@@ -34,63 +32,52 @@ async def lifespan(app: FastAPI):
     settings.skills_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Initialize services ──────────────────────────────────────────────
+    import memory.router as _mem_router_mod
     from memory.service import MemoryService
-    from memory.router import router as memory_router, memory_service as _mem_svc
 
-    _mem_svc = MemoryService(db_path=settings.db_path)
-    app.state.memory_service = _mem_svc
-    memory_router.memory_service = _mem_svc  # type: ignore[attr-defined]
+    _mem_router_mod.memory_service = MemoryService(db_path=settings.db_path)
 
+    import conversation.router as _conv_router_mod
     from conversation.service import ConversationService
-    from conversation.router import router as conversation_router, conversation_service as _conv_svc
 
-    _conv_svc = ConversationService(db_path=settings.db_path)
-    app.state.conversation_service = _conv_svc
-    conversation_router.conversation_service = _conv_svc  # type: ignore[attr-defined]
+    _conv_router_mod.conversation_service = ConversationService(db_path=settings.db_path)
 
+    import agent.router as _agent_router_mod
     from agent.engine import AgentEngine
     from agent.service import AgentService
-    from agent.router import router as agent_router, agent_service as _agent_svc
 
-    _agent_svc = AgentService(AgentEngine())
-    app.state.agent_service = _agent_svc
-    agent_router.agent_service = _agent_svc  # type: ignore[attr-defined]
+    _agent_router_mod.agent_service = AgentService(AgentEngine())
 
+    import skill.router as _skill_router_mod
     from skill.service import SkillService
-    from skill.router import router as skill_router, skill_service as _skill_svc
 
-    _skill_svc = SkillService(skills_dir=settings.skills_dir)
-    app.state.skill_service = _skill_svc
-    skill_router.skill_service = _skill_svc  # type: ignore[attr-defined]
+    _skill_router_mod.skill_service = SkillService(skills_dir=settings.skills_dir)
 
+    import tools.router as _tools_router_mod
     from tools.service import ToolService
-    from tools.router import router as tools_router, tool_service as _tool_svc
 
-    _tool_svc = ToolService()
-    app.state.tool_service = _tool_svc
-    tools_router.tool_service = _tool_svc  # type: ignore[attr-defined]
+    _tools_router_mod.tool_service = ToolService()
 
+    import mcp.router as _mcp_router_mod
     from mcp.service import MCPService
-    from mcp.router import router as mcp_router, mcp_service as _mcp_svc
 
-    _mcp_svc = MCPService()
-    app.state.mcp_service = _mcp_svc
-    mcp_router.mcp_service = _mcp_svc  # type: ignore[attr-defined]
+    _mcp_router_mod.mcp_service = MCPService()
 
     from provider.service import init_providers
-    from provider.router import router as provider_router
+    import provider.router as _provider_router_mod
 
     init_providers(settings)
 
     # ── Register routers ─────────────────────────────────────────────────
-    app.include_router(provider_router)
-    app.include_router(memory_router)
-    app.include_router(conversation_router)
-    app.include_router(agent_router)
-    app.include_router(skill_router)
-    app.include_router(tools_router)
-    app.include_router(mcp_router)
-    app.include_router(provider_router)
+    from provider.registry import registry as provider_registry
+
+    app.include_router(_provider_router_mod.router)
+    app.include_router(_mem_router_mod.router)
+    app.include_router(_conv_router_mod.router)
+    app.include_router(_agent_router_mod.router)
+    app.include_router(_skill_router_mod.router)
+    app.include_router(_tools_router_mod.router)
+    app.include_router(_mcp_router_mod.router)
 
     # ── Register built-in tools ───────────────────────────────────────────
     from tools.builtin import register_all as register_builtin_tools
@@ -100,7 +87,7 @@ async def lifespan(app: FastAPI):
         "Hermes Engine started — data_dir=%s debug=%s providers=%d",
         settings.data_dir,
         settings.debug,
-        len(provider_router.registry.list()) if hasattr(provider_router, 'registry') else 0,
+        provider_registry.count,
     )
     yield
 

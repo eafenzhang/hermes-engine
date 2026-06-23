@@ -10,6 +10,8 @@ import json
 import logging
 from typing import Any, AsyncIterator
 
+import asyncio
+
 from google import genai
 from google.genai import types as genai_types
 
@@ -25,11 +27,11 @@ class GeminiAdapter(ProviderBase):
 
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         super().__init__(api_key, base_url)
-        self._client: genai.Client | None = None
+        self._client: genai.aio.Client | None = None
 
-    def _get_client(self) -> genai.Client:
+    def _get_client(self) -> genai.aio.Client:
         if self._client is None:
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = genai.aio.Client(api_key=self.api_key)
         return self._client
 
     async def chat_completion(
@@ -43,7 +45,6 @@ class GeminiAdapter(ProviderBase):
     ) -> dict[str, Any]:
         client = self._get_client()
 
-        # Build Gemini contents array from messages
         contents = []
         system_instruction = None
         for m in messages:
@@ -62,7 +63,7 @@ class GeminiAdapter(ProviderBase):
             system_instruction=system_instruction,
         )
 
-        response = client.models.generate_content(
+        response = await client.models.generate_content(
             model=model,
             contents=contents,
             config=genai_config,
@@ -109,13 +110,11 @@ class GeminiAdapter(ProviderBase):
             system_instruction=system_instruction,
         )
 
-        response = client.models.generate_content_stream(
+        async for chunk in await client.models.generate_content_stream(
             model=model,
             contents=contents,
             config=genai_config,
-        )
-
-        for chunk in response:
+        ):
             if chunk.text:
                 yield f"data: {json.dumps({'type': 'text', 'content': chunk.text})}\n\n"
 
@@ -124,7 +123,7 @@ class GeminiAdapter(ProviderBase):
     async def check_connectivity(self) -> bool:
         client = self._get_client()
         try:
-            client.models.generate_content(
+            await client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents="ping",
                 config=genai_types.GenerateContentConfig(max_output_tokens=1),

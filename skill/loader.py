@@ -118,7 +118,18 @@ class SkillLoader:
         )
 
     def get(self, name: str) -> SkillDoc | None:
-        return self._skills.get(name)
+        # Check cache first
+        cached = self._skills.get(name)
+        if cached:
+            return cached
+        # Fallback: try loading from disk
+        fpath = self.skills_dir / f"{name}.md"
+        if fpath.exists():
+            skill = self._load_file(fpath)
+            if skill:
+                self._skills[name] = skill
+                return skill
+        return None
 
     def search(self, query: str) -> list[SkillDoc]:
         """Search loaded skills by keyword match."""
