@@ -16,6 +16,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_BUSY_RETRIES = 3
+_BUSY_DELAY_S = 0.05
+
 
 class SQLiteStore:
     """SQLite + FTS5 store for memories and conversations."""
@@ -34,7 +37,22 @@ class SQLiteStore:
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn.execute("PRAGMA busy_timeout=3000")
         return self._local.conn
+
+    def _execute_retry(self, sql: str, params: list[Any] | None = None) -> sqlite3.Cursor:
+        """Execute with retry on SQLITE_BUSY."""
+        for attempt in range(_BUSY_RETRIES):
+            try:
+                conn = self._get_conn()
+                if params:
+                    return conn.execute(sql, params)
+                return conn.execute(sql)
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc) and attempt < _BUSY_RETRIES - 1:
+                    time.sleep(_BUSY_DELAY_S * (attempt + 1))
+                    continue
+                raise
 
     def _init_db(self) -> None:
         """Create tables on first use."""
@@ -75,26 +93,6 @@ class SQLiteStore:
                 INSERT INTO memories_fts(rowid, content, summary, tags)
                 VALUES (new.rowid, new.content, new.summary, new.tags);
             END;
-
-            CREATE TABLE IF NOT EXISTS conversations (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL DEFAULT 'New Conversation',
-                metadata TEXT DEFAULT '{}',
-                message_count INTEGER DEFAULT 0,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                metadata TEXT DEFAULT '{}',
-                created_at REAL NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
         """)
         conn.commit()
 
@@ -212,80 +210,7 @@ class SQLiteStore:
             row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
         return row[0] if row else 0
 
-    # ── Conversation persistence ─────────────────────────────────────────
-
-    def create_conversation(self, title: str = "New Conversation", metadata: dict | None = None) -> dict[str, Any]:
-        conn = self._get_conn()
-        now = time.time()
-        conv_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO conversations (id, title, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (conv_id, title, json.dumps(metadata or {}), now, now),
-        )
-        conn.commit()
-        return self.get_conversation(conv_id)
-
-    def get_conversation(self, conv_id: str) -> dict[str, Any] | None:
-        conn = self._get_conn()
-        row = conn.execute("SELECT rowid, * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
-        return self._row_to_dict(row) if row else None
-
-    def list_conversations(self, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT rowid, * FROM conversations ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
-        count_row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
-        return [self._row_to_dict(r) for r in rows], (count_row[0] if count_row else 0)
-
-    def add_message(self, conv_id: str, role: str, content: str, metadata: dict | None = None) -> dict[str, Any]:
-        conn = self._get_conn()
-        now = time.time()
-        msg_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (msg_id, conv_id, role, content, json.dumps(metadata or {}), now),
-        )
-        conn.execute("UPDATE conversations SET updated_at = ?, message_count = message_count + 1 WHERE id = ?",
-                      (now, conv_id))
-        conn.commit()
-        return {"id": msg_id, "conversation_id": conv_id, "role": role, "content": content, "created_at": now}
-
-    def get_messages(self, conv_id: str, limit: int = 100, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-        conn = self._get_conn()
-        conv = conn.execute("SELECT rowid, * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
-        if not conv:
-            return [], 0
-        rows = conn.execute(
-            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?",
-            (conv_id, limit, offset),
-        ).fetchall()
-        count_row = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conv_id,)).fetchone()
-        return [self._row_to_dict(r) for r in rows], (count_row[0] if count_row else 0)
-
-    def update_conversation(self, conv_id: str, title: str | None = None, metadata: dict | None = None) -> dict[str, Any] | None:
-        conn = self._get_conn()
-        now = time.time()
-        existing = self.get_conversation(conv_id)
-        if not existing:
-            return None
-        if title is not None:
-            conn.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", (title, now, conv_id))
-        if metadata is not None:
-            conn.execute("UPDATE conversations SET metadata = ?, updated_at = ? WHERE id = ?",
-                          (json.dumps(metadata), now, conv_id))
-        if title is None and metadata is None:
-            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
-        conn.commit()
-        return self.get_conversation(conv_id)
-
-    def delete_conversation(self, conv_id: str) -> bool:
-        conn = self._get_conn()
-        conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))
-        cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
-        conn.commit()
-        return cursor.rowcount > 0
+    # ── (conversation persistence moved to conversation/store.py) ─────────
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
