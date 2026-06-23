@@ -264,6 +264,22 @@ class SQLiteStore:
         count_row = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conv_id,)).fetchone()
         return [self._row_to_dict(r) for r in rows], (count_row[0] if count_row else 0)
 
+    def update_conversation(self, conv_id: str, title: str | None = None, metadata: dict | None = None) -> dict[str, Any] | None:
+        conn = self._get_conn()
+        now = time.time()
+        existing = self.get_conversation(conv_id)
+        if not existing:
+            return None
+        if title is not None:
+            conn.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", (title, now, conv_id))
+        if metadata is not None:
+            conn.execute("UPDATE conversations SET metadata = ?, updated_at = ? WHERE id = ?",
+                          (json.dumps(metadata), now, conv_id))
+        if title is None and metadata is None:
+            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+        conn.commit()
+        return self.get_conversation(conv_id)
+
     def delete_conversation(self, conv_id: str) -> bool:
         conn = self._get_conn()
         conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conv_id,))

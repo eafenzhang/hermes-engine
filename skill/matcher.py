@@ -50,5 +50,5 @@ class SkillMatcher:
         skills: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Placeholder for LLM-based skill matching (v2)."""
-        # In future: call provider with skill list and ask which to use
-        return skills[:3]
+        logger.warning("llm_match is not yet implemented — falling back to keyword top-3")
+        return self.find_relevant(query, top_k=3)

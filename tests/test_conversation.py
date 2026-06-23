@@ -90,6 +90,22 @@ def test_message_increments_count(client):
     assert get.json()["data"]["message_count"] == 2
 
 
+def test_update_conversation_title(client):
+    """PUT /api/conversations/{id} updates title."""
+    create = client.post("/api/conversations", json={"title": "Old Title"})
+    cid = create.json()["data"]["id"]
+
+    resp = client.put(f"/api/conversations/{cid}", json={"title": "New Title"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["title"] == "New Title"
+
+
+def test_update_conversation_not_found(client):
+    """PUT /api/conversations/{nonexistent} → 404."""
+    resp = client.put("/api/conversations/nonexistent", json={"title": "Nope"})
+    assert resp.status_code == 404
+
+
 def test_delete_conversation(client):
     """DELETE /api/conversations/{id} removes conversation and messages."""
     create = client.post("/api/conversations", json={"title": "To Delete"})

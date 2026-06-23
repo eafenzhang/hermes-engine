@@ -65,15 +65,23 @@ class Curator:
         # (soft-delete by setting scope to 'archived')
         now = time.time()
         archived = 0
-        all_mems, total = self.store.list_memories(limit=1000)
-        for mem in all_mems:
-            age_days = (now - mem["updated_at"]) / 86400
-            if age_days > 90 and mem.get("importance", 1) <= 2 and mem.get("scope") != "archived":
-                self.store.update_memory(mem["id"], scope="archived")
-                archived += 1
-            elif age_days > 30 and mem.get("importance", 1) <= 1:
-                self.store.update_memory(mem["id"], scope="archived")
-                archived += 1
+        total = 0
+        offset = 0
+        page_size = 200
+        while True:
+            batch, _ = self.store.list_memories(limit=page_size, offset=offset)
+            if not batch:
+                break
+            total += len(batch)
+            for mem in batch:
+                age_days = (now - mem["updated_at"]) / 86400
+                if age_days > 90 and mem.get("importance", 1) <= 2 and mem.get("scope") != "archived":
+                    self.store.update_memory(mem["id"], scope="archived")
+                    archived += 1
+                elif age_days > 30 and mem.get("importance", 1) <= 1:
+                    self.store.update_memory(mem["id"], scope="archived")
+                    archived += 1
+            offset += page_size
 
         report["archived"] = archived
         report["total_memories"] = total

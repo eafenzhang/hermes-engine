@@ -5,6 +5,7 @@ Allows Hermes Engine to use tools exposed by MCP servers.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -86,10 +87,15 @@ class MCPBridge:
     def remove_server(self, name: str) -> bool:
         conn = self._servers.pop(name, None)
         if conn:
-            import asyncio
-            asyncio.ensure_future(conn.close())
+            asyncio.create_task(self._close_connection(conn))
             return True
         return False
+
+    async def _close_connection(self, conn: MCPServerConnection) -> None:
+        try:
+            await conn.close()
+        except Exception:
+            logger.exception("Error closing MCP connection %s", conn.name)
 
     async def list_all_tools(self) -> list[dict[str, Any]]:
         """Aggregate tools from all connected MCP servers."""
@@ -112,7 +118,10 @@ class MCPBridge:
 
     async def close_all(self) -> None:
         for conn in self._servers.values():
-            await conn.close()
+            try:
+                await conn.close()
+            except Exception:
+                logger.exception("Error closing MCP connection %s", conn.name)
         self._servers.clear()
 
 

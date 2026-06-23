@@ -46,6 +46,16 @@ async def get_conversation(conv_id: str):
     return ApiResponse(data=conv)
 
 
+@router.put("/{conv_id}")
+async def update_conversation(conv_id: str, body: ConversationUpdate):
+    svc = _get_service()
+    conv = svc.update(conv_id, title=body.title, metadata=body.metadata)
+    if not conv:
+        raise NotFoundError(f"Conversation {conv_id} not found")
+    await bus.publish_domain("conversation", "updated", data={"conversation_id": conv_id})
+    return ApiResponse(data=conv, message="Conversation updated")
+
+
 @router.get("/{conv_id}/messages")
 async def get_messages(
     conv_id: str,

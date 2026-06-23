@@ -139,3 +139,11 @@ class SkillLoader:
     @property
     def count(self) -> int:
         return len(self._skills)
+
+    def list_all(self) -> list[SkillDoc]:
+        """Return all currently loaded skills."""
+        return list(self._skills.values())
+
+    def remove_from_cache(self, name: str) -> None:
+        """Remove a skill from the in-memory cache (e.g. after deletion)."""
+        self._skills.pop(name, None)

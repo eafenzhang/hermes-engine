@@ -22,7 +22,7 @@ class SkillService:
         return [s.to_dict() for s in self.loader.scan()]
 
     def list(self) -> list[dict[str, Any]]:
-        return [s.to_dict() for s in self.loader._skills.values()]
+        return [s.to_dict() for s in self.loader.list_all()]
 
     def get(self, name: str) -> dict[str, Any] | None:
         skill = self.loader.get(name)
@@ -37,7 +37,7 @@ class SkillService:
 
     def delete(self, name: str) -> bool:
         removed = self.creator.delete(name)
-        self.loader._skills.pop(name, None)
+        self.loader.remove_from_cache(name)
         return removed
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:

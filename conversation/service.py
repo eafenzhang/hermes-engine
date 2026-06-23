@@ -29,5 +29,8 @@ class ConversationService:
     def get_messages(self, conv_id: str, limit: int = 100, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
         return self.store.get_messages(conv_id, limit, offset)
 
+    def update(self, conv_id: str, title: str | None = None, metadata: dict | None = None) -> dict[str, Any] | None:
+        return self.store.update_conversation(conv_id, title, metadata)
+
     def delete(self, conv_id: str) -> bool:
         return self.store.delete_conversation(conv_id)
