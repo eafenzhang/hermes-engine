@@ -67,7 +67,7 @@ class OpenAIAdapter(ProviderBase):
             "stop_reason": choice.finish_reason,
         }
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "gpt-4o",

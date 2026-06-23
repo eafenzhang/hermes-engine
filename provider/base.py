@@ -18,6 +18,29 @@ class ProviderBase(ABC):
         self.api_key = api_key
         self.base_url = base_url
 
+    # ── Shared helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def split_system_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Separate system message(s) from the message list.
+
+        Returns ``(system_content, non_system_messages)``.  If multiple
+        system messages are present the last one wins (matching the
+        behaviour of most API providers).
+        """
+        system_content: str | None = None
+        non_system: list[dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "system":
+                system_content = str(m["content"])
+            else:
+                non_system.append(m)
+        return system_content, non_system
+
+    # ── Abstract interface ─────────────────────────────────────────────
+
     @abstractmethod
     async def chat_completion(
         self,

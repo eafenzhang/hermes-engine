@@ -46,13 +46,8 @@ class AnthropicAdapter(ProviderBase):
     ) -> dict[str, Any]:
         client = self._get_client()
 
-        system_msg = None
-        api_messages = []
-        for m in messages:
-            if m.get("role") == "system":
-                system_msg = m["content"]
-            else:
-                api_messages.append({"role": m["role"], "content": m["content"]})
+        system_msg, non_system = self.split_system_messages(messages)
+        api_messages = [{"role": m["role"], "content": m["content"]} for m in non_system]
 
         params: dict[str, Any] = {
             "model": model,
@@ -79,7 +74,7 @@ class AnthropicAdapter(ProviderBase):
             "stop_reason": response.stop_reason,
         }
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "claude-sonnet-4-20250514",
@@ -90,13 +85,8 @@ class AnthropicAdapter(ProviderBase):
     ) -> AsyncIterator[str]:
         client = self._get_client()
 
-        system_msg = None
-        api_messages = []
-        for m in messages:
-            if m.get("role") == "system":
-                system_msg = m["content"]
-            else:
-                api_messages.append({"role": m["role"], "content": m["content"]})
+        system_msg, non_system = self.split_system_messages(messages)
+        api_messages = [{"role": m["role"], "content": m["content"]} for m in non_system]
 
         params: dict[str, Any] = {
             "model": model,

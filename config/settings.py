@@ -43,3 +43,16 @@ class Settings(BaseSettings):
     def local_mode(self) -> bool:
         """When True, skip authentication — intended for desktop embedding."""
         return True
+
+    # ── Security ─────────────────────────────────────────────────────────
+    api_token: str = ""
+    """Optional shared API token for authentication.
+    When set, all requests must include ``Authorization: Bearer <token>``.
+    Left empty (default) to skip authentication in local mode."""
+
+    # Additional commands to allow in the execution whitelist.
+    # The built-in base set is always present; these are supplementals.
+    extra_allowed_commands: list[str] = []
+
+    # Additional allowed base directories for file read/write tools.
+    extra_allowed_dirs: list[str] = []

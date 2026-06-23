@@ -62,13 +62,13 @@ class ToolExecutor:
         """Execute multiple tool calls sequentially or concurrently."""
         if concurrent:
             tasks = [self.execute(c["name"], c.get("arguments", {})) for c in calls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            gathered = await asyncio.gather(*tasks, return_exceptions=True)
             return [
                 {"tool": c["name"], "result": r if not isinstance(r, Exception) else str(r)}
-                for c, r in zip(calls, results)
+                for c, r in zip(calls, gathered)
             ]
         else:
-            results = []
+            results: list[dict[str, Any]] = []
             for call in calls:
                 r = await self.execute(call["name"], call.get("arguments", {}))
                 results.append({"tool": call["name"], "result": r})

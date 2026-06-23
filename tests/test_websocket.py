@@ -1,4 +1,4 @@
-"""WebSocket event bus tests — uses TestClient's sync websocket_connect."""
+"""WebSocket event bus tests."""
 
 from __future__ import annotations
 

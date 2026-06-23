@@ -34,7 +34,7 @@ class MockProvider(ProviderBase):
             "stop_reason": "end_turn",
         }
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "mock-model",
@@ -66,7 +66,7 @@ class ErrorProvider(ProviderBase):
     ) -> dict[str, Any]:
         raise RuntimeError("Provider internal error")
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "error-model",

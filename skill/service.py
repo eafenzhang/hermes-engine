@@ -21,7 +21,7 @@ class SkillService:
     def scan(self) -> list[dict[str, Any]]:
         return [s.to_dict() for s in self.loader.scan()]
 
-    def list(self) -> list[dict[str, Any]]:
+    def list_all(self) -> list[dict[str, Any]]:
         return [s.to_dict() for s in self.loader.list_all()]
 
     def get(self, name: str) -> dict[str, Any] | None:

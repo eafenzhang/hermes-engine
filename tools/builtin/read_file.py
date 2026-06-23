@@ -1,12 +1,15 @@
 """Built-in tool: read a file from disk.
 
-In --local mode the allowed base is the project root or home directory.
+File access is restricted to the project root and registered workspace
+directories (see ``tools/builtin/_shared.py``).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+from ._shared import is_path_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -28,30 +31,12 @@ SCHEMA = {
     },
 }
 
-# Allowed base directories for file operations
-_ALLOWED_BASES = [
-    Path.home().resolve(),
-    Path.cwd().resolve(),
-]
-
-
-def _is_path_allowed(fpath: Path) -> bool:
-    """Check if the resolved path is within an allowed base directory."""
-    try:
-        fpath = fpath.resolve()
-        return any(
-            str(fpath).startswith(str(base))
-            for base in _ALLOWED_BASES
-        )
-    except (ValueError, OSError, RuntimeError):
-        return False
-
 
 async def read_file(path: str, max_chars: int = 50000) -> str:
     """Read a file and return its contents."""
-    fpath = Path(path).resolve()
-    if not _is_path_allowed(fpath):
-        return f"Error: access denied — path outside allowed directories"
+    fpath = Path(path).resolve(strict=False)
+    if not is_path_allowed(fpath):
+        return "Error: access denied — path outside allowed directories"
     if not fpath.exists():
         return f"Error: file not found at {path}"
     if not fpath.is_file():

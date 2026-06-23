@@ -77,6 +77,8 @@ class MCPBridge:
 
     def __init__(self) -> None:
         self._servers: dict[str, MCPServerConnection] = {}
+        # Track pending close tasks so they can be awaited in close_all().
+        self._pending_closes: list[asyncio.Task[None]] = []
 
     def add_server(self, name: str, url: str, headers: dict[str, str] | None = None) -> MCPServerConnection:
         conn = MCPServerConnection(name, url, headers)
@@ -87,7 +89,10 @@ class MCPBridge:
     def remove_server(self, name: str) -> bool:
         conn = self._servers.pop(name, None)
         if conn:
-            asyncio.create_task(self._close_connection(conn))
+            # Prune already-completed tasks before appending
+            self._pending_closes = [t for t in self._pending_closes if not t.done()]
+            task = asyncio.create_task(self._close_connection(conn))
+            self._pending_closes.append(task)
             return True
         return False
 
@@ -117,6 +122,10 @@ class MCPBridge:
         return [s.to_dict() for s in self._servers.values()]
 
     async def close_all(self) -> None:
+        # Await any pending closes from remove_server() calls first.
+        if self._pending_closes:
+            await asyncio.gather(*self._pending_closes, return_exceptions=True)
+            self._pending_closes.clear()
         for conn in self._servers.values():
             try:
                 await conn.close()

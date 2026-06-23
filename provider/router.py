@@ -17,7 +17,7 @@ _DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
 @router.get("", response_model=ProviderListResponse)
 async def list_providers():
-    return ProviderListResponse(data=registry.list())
+    return ProviderListResponse(data=registry.list())  # type: ignore[arg-type]
 
 
 @router.post("/chat")
@@ -33,7 +33,7 @@ async def chat(request: ChatRequest):
     try:
         if request.stream:
             return StreamingResponse(
-                provider.chat_completion_stream(
+                provider.chat_completion_stream(  # type: ignore[arg-type]
                     messages=messages,
                     model=model,
                     temperature=request.temperature,

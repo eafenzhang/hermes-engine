@@ -33,7 +33,7 @@ class AgentMockProvider(ProviderBase):
             "stop_reason": "end_turn",
         }
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "mock-model",
@@ -65,7 +65,7 @@ class StreamingOnlyProvider(ProviderBase):
     ) -> dict[str, Any]:
         raise RuntimeError("Non-streaming not supported")
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "mock-model",

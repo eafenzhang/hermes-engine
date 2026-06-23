@@ -7,52 +7,26 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
-import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from shared.sqlite_base import SQLiteBase
+from shared.migrations import MigrationRunner
+
 logger = logging.getLogger(__name__)
 
-# Number of retries on SQLITE_BUSY
-_BUSY_RETRIES = 3
-_BUSY_DELAY_S = 0.05
 
-
-class ConversationStore:
+class ConversationStore(SQLiteBase):
     """SQLite storage for conversations and messages."""
 
     def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-        self._local = threading.local()
+        super().__init__(db_path)
         self._init_db()
+        self._run_migrations()
 
-    # ── Connection management ────────────────────────────────────────────
-
-    def _get_conn(self) -> sqlite3.Connection:
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(str(self.db_path))
-            self._local.conn.row_factory = sqlite3.Row
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn.execute("PRAGMA busy_timeout=3000")
-        return self._local.conn
-
-    def _execute_retry(self, sql: str, params: list[Any] = None) -> sqlite3.Cursor:
-        """Execute with retry on SQLITE_BUSY."""
-        for attempt in range(_BUSY_RETRIES):
-            try:
-                conn = self._get_conn()
-                if params:
-                    return conn.execute(sql, params)
-                return conn.execute(sql)
-            except sqlite3.OperationalError as exc:
-                if "locked" in str(exc) and attempt < _BUSY_RETRIES - 1:
-                    time.sleep(_BUSY_DELAY_S * (attempt + 1))
-                    continue
-                raise
+    # ── Schema ──────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
         conn = self._get_conn()
@@ -79,6 +53,14 @@ class ConversationStore:
         """)
         conn.commit()
 
+    def _run_migrations(self) -> None:
+        """Apply any pending schema migrations for the conversations store."""
+        migrations: list[tuple[int, str]] = [
+            # v1: initial schema (idempotent via IF NOT EXISTS above)
+            (1, ""),
+        ]
+        MigrationRunner(self.db_path).apply("conversations", migrations)
+
     # ── CRUD ─────────────────────────────────────────────────────────────
 
     def create(self, title: str = "New Conversation", metadata: dict | None = None) -> dict[str, Any]:
@@ -90,7 +72,9 @@ class ConversationStore:
             (conv_id, title, json.dumps(metadata or {}), now, now),
         )
         conn.commit()
-        return self.get(conv_id)
+        result = self.get(conv_id)
+        assert result is not None, f"create: just-inserted {conv_id} not found"
+        return result
 
     def get(self, conv_id: str) -> dict[str, Any] | None:
         row = self._execute_retry(
@@ -98,7 +82,7 @@ class ConversationStore:
         ).fetchone()
         return self._row_to_dict(row) if row else None
 
-    def list(self, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+    def list_conversations(self, limit: int = 50, offset: int = 0) -> tuple["list[dict[str, Any]]", int]:
         rows = self._execute_retry(
             "SELECT rowid, * FROM conversations ORDER BY updated_at DESC LIMIT ? OFFSET ?",
             [limit, offset],
@@ -108,20 +92,34 @@ class ConversationStore:
         ).fetchone()
         return [self._row_to_dict(r) for r in rows], (count_row[0] if count_row else 0)
 
-    def update(self, conv_id: str, title: str | None = None, metadata: dict | None = None) -> dict[str, Any] | None:
+    def update(
+        self,
+        conv_id: str,
+        title: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict[str, Any] | None:
+        """Update a conversation. Uses a single UPDATE statement to avoid TOCTOU races."""
         conn = self._get_conn()
         now = time.time()
-        existing = self.get(conv_id)
-        if not existing:
-            return None
+        set_parts: list[str] = ["updated_at = ?"]
+        params: list[Any] = [now]
+
         if title is not None:
-            conn.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", (title, now, conv_id))
+            set_parts.append("title = ?")
+            params.append(title)
         if metadata is not None:
-            conn.execute("UPDATE conversations SET metadata = ?, updated_at = ? WHERE id = ?",
-                          (json.dumps(metadata), now, conv_id))
-        if title is None and metadata is None:
-            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+            set_parts.append("metadata = ?")
+            params.append(json.dumps(metadata))
+
+        params.append(conv_id)
+        set_clause = ", ".join(set_parts)
+        cursor = conn.execute(
+            f"UPDATE conversations SET {set_clause} WHERE id = ?",
+            params,
+        )
         conn.commit()
+        if cursor.rowcount == 0:
+            return None
         return self.get(conv_id)
 
     def delete(self, conv_id: str) -> bool:
@@ -158,15 +156,3 @@ class ConversationStore:
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", [conv_id]
         ).fetchone()
         return [self._row_to_dict(r) for r in rows], (count_row[0] if count_row else 0)
-
-    # ── Helpers ──────────────────────────────────────────────────────────
-
-    def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
-        d = dict(row)
-        if "metadata" in d and isinstance(d["metadata"], str):
-            try:
-                d["metadata"] = json.loads(d["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-        d.pop("rowid", None)
-        return d

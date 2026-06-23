@@ -23,5 +23,5 @@ class MCPService:
     async def list_all_tools(self) -> list[dict[str, Any]]:
         return await bridge.list_all_tools()
 
-    async def call_tool(self, server: str, tool: str, arguments: dict[str, Any] = None) -> Any:
+    async def call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> Any:
         return await bridge.call_tool(server, tool, arguments or {})

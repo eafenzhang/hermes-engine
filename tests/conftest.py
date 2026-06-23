@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import tempfile
+import warnings
 from pathlib import Path
 
-import pytest
-from starlette.testclient import TestClient
+# Suppress Starlette TestClient deprecation warning — httpx migration
+# requires broader async refactor (tracked for future iteration).
+warnings.filterwarnings("ignore", message=".*starlette.testclient.*")
+warnings.filterwarnings("ignore", message=".*httpx.*starlette.*")
+
+import pytest  # noqa: E402
+from starlette.testclient import TestClient  # noqa: E402
+
+from typing import Generator
 
 from config.settings import Settings
 from main import create_app
@@ -34,7 +42,7 @@ def app(tmp_settings: Settings):
 
 
 @pytest.fixture
-def client(app) -> TestClient:
+def client(app) -> Generator[TestClient, None, None]:
     """Sync TestClient — handles lifespan events and WebSocket connections."""
     with TestClient(app) as tc:
         yield tc

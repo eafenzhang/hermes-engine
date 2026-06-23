@@ -1,9 +1,15 @@
-"""Built-in tool: write content to a file (path-traversal safe)."""
+"""Built-in tool: write content to a file (path-traversal safe).
+
+File access is restricted to the project root and registered workspace
+directories (see ``tools/builtin/_shared.py``).
+"""
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+from ._shared import is_path_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -25,28 +31,12 @@ SCHEMA = {
     },
 }
 
-_ALLOWED_BASES = [
-    Path.home().resolve(),
-    Path.cwd().resolve(),
-]
-
-
-def _is_path_allowed(fpath: Path) -> bool:
-    try:
-        fpath = fpath.resolve()
-        return any(
-            str(fpath).startswith(str(base))
-            for base in _ALLOWED_BASES
-        )
-    except (ValueError, OSError, RuntimeError):
-        return False
-
 
 async def write_file(path: str, content: str) -> str:
     """Write content to a file."""
-    fpath = Path(path).resolve()
-    if not _is_path_allowed(fpath):
-        return f"Error: access denied — path outside allowed directories"
+    fpath = Path(path).resolve(strict=False)
+    if not is_path_allowed(fpath):
+        return "Error: access denied — path outside allowed directories"
     try:
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(content, encoding="utf-8")

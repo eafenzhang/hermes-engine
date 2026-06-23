@@ -2,28 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from agent.schemas import AgentTurnRequest
+from shared.dependencies import get_agent_service
 from shared.event import bus
 from shared.models import ApiResponse
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
-agent_service: "AgentService | None" = None  # noqa: F821
-
-
-def _get_service():
-    assert agent_service is not None, "agent_service not initialized"
-    return agent_service
-
 
 @router.post("/chat")
-async def chat(body: AgentTurnRequest):
+async def chat(body: AgentTurnRequest, service=Depends(get_agent_service)):
     """Execute an agent turn — returns response content (non-streaming)."""
-    svc = _get_service()
-    result = await svc.chat(
+    result = await service.chat(
         messages=body.messages,
         provider=body.provider,
         model=body.model,
@@ -36,11 +29,10 @@ async def chat(body: AgentTurnRequest):
 
 
 @router.post("/chat/stream")
-async def chat_stream(body: AgentTurnRequest):
+async def chat_stream(body: AgentTurnRequest, service=Depends(get_agent_service)):
     """Execute an agent turn with SSE streaming."""
-    svc = _get_service()
     return StreamingResponse(
-        svc.chat_stream(
+        service.chat_stream(
             messages=body.messages,
             provider=body.provider,
             model=body.model,

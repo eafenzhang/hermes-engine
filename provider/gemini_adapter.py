@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any, AsyncIterator
-
-import asyncio
 
 from google import genai
 from google.genai import types as genai_types
@@ -27,11 +26,11 @@ class GeminiAdapter(ProviderBase):
 
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         super().__init__(api_key, base_url)
-        self._client: genai.aio.Client | None = None
+        self._client: "genai.aio.Client | None" = None  # type: ignore[name-defined]
 
-    def _get_client(self) -> genai.aio.Client:
+    def _get_client(self) -> "genai.aio.Client":  # type: ignore[name-defined]
         if self._client is None:
-            self._client = genai.aio.Client(api_key=self.api_key)
+            self._client = genai.aio.Client(api_key=self.api_key)  # type: ignore[attr-defined]
         return self._client
 
     async def chat_completion(
@@ -45,17 +44,14 @@ class GeminiAdapter(ProviderBase):
     ) -> dict[str, Any]:
         client = self._get_client()
 
+        system_instruction, non_system = self.split_system_messages(messages)
         contents = []
-        system_instruction = None
-        for m in messages:
-            if m.get("role") == "system":
-                system_instruction = m["content"]
-            else:
-                role = "user" if m["role"] in ("user", "tool") else "model"
-                contents.append({
-                    "role": role,
-                    "parts": [{"text": m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])}],
-                })
+        for m in non_system:
+            role = "user" if m["role"] in ("user", "tool") else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])}],
+            })
 
         genai_config = genai_types.GenerateContentConfig(
             temperature=temperature,
@@ -69,8 +65,14 @@ class GeminiAdapter(ProviderBase):
             config=genai_config,
         )
 
+        candidate_id: str | int = ""
+        if response.candidates:
+            c = response.candidates[0]
+            candidate_id = getattr(c, "index", candidate_id)
+        response_id = f"gemini-{candidate_id}-{uuid.uuid4().hex[:8]}"
+
         return {
-            "id": "",
+            "id": response_id,
             "model": model,
             "role": "assistant",
             "content": response.text or "",
@@ -81,7 +83,7 @@ class GeminiAdapter(ProviderBase):
             "stop_reason": response.candidates[0].finish_reason.name if response.candidates else "unknown",
         }
 
-    async def chat_completion_stream(
+    async def chat_completion_stream(  # type: ignore[override]
         self,
         messages: list[dict[str, Any]],
         model: str = "gemini-2.0-flash",
@@ -92,17 +94,14 @@ class GeminiAdapter(ProviderBase):
     ) -> AsyncIterator[str]:
         client = self._get_client()
 
+        system_instruction, non_system = self.split_system_messages(messages)
         contents = []
-        system_instruction = None
-        for m in messages:
-            if m.get("role") == "system":
-                system_instruction = m["content"]
-            else:
-                role = "user" if m["role"] in ("user", "tool") else "model"
-                contents.append({
-                    "role": role,
-                    "parts": [{"text": m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])}],
-                })
+        for m in non_system:
+            role = "user" if m["role"] in ("user", "tool") else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])}],
+            })
 
         genai_config = genai_types.GenerateContentConfig(
             temperature=temperature,

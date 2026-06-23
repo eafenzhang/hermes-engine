@@ -1,4 +1,4 @@
-"""SQLite FTS5 storage for memory and conversation persistence.
+"""SQLite FTS5 storage for memory persistence.
 
 Copyright (c) NousResearch — curator logic adapted from Hermes Agent under Apache 2.0.
 """
@@ -7,52 +7,26 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
-import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from shared.sqlite_base import SQLiteBase
+from shared.migrations import MigrationRunner
+
 logger = logging.getLogger(__name__)
 
-_BUSY_RETRIES = 3
-_BUSY_DELAY_S = 0.05
 
-
-class SQLiteStore:
-    """SQLite + FTS5 store for memories and conversations."""
+class SQLiteStore(SQLiteBase):
+    """SQLite + FTS5 store for memories."""
 
     def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
-        self._local = threading.local()
+        super().__init__(db_path)
         self._init_db()
+        self._run_migrations()
 
-    # ── Connection management ────────────────────────────────────────────
-
-    def _get_conn(self) -> sqlite3.Connection:
-        """Get thread-local connection."""
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(str(self.db_path))
-            self._local.conn.row_factory = sqlite3.Row
-            self._local.conn.execute("PRAGMA journal_mode=WAL")
-            self._local.conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn.execute("PRAGMA busy_timeout=3000")
-        return self._local.conn
-
-    def _execute_retry(self, sql: str, params: list[Any] | None = None) -> sqlite3.Cursor:
-        """Execute with retry on SQLITE_BUSY."""
-        for attempt in range(_BUSY_RETRIES):
-            try:
-                conn = self._get_conn()
-                if params:
-                    return conn.execute(sql, params)
-                return conn.execute(sql)
-            except sqlite3.OperationalError as exc:
-                if "locked" in str(exc) and attempt < _BUSY_RETRIES - 1:
-                    time.sleep(_BUSY_DELAY_S * (attempt + 1))
-                    continue
-                raise
+    # ── Schema ──────────────────────────────────────────────────────────
 
     def _init_db(self) -> None:
         """Create tables on first use."""
@@ -96,6 +70,14 @@ class SQLiteStore:
         """)
         conn.commit()
 
+    def _run_migrations(self) -> None:
+        """Apply any pending schema migrations for the memories store."""
+        migrations: list[tuple[int, str]] = [
+            # v1: initial schema (idempotent via IF NOT EXISTS above)
+            (1, ""),
+        ]
+        MigrationRunner(self.db_path).apply("memories", migrations)
+
     # ── Memory CRUD ──────────────────────────────────────────────────────
 
     def add_memory(
@@ -118,7 +100,9 @@ class SQLiteStore:
             (mem_id, content, summary, source, scope, importance, tags_json, now, now),
         )
         conn.commit()
-        return self.get_memory(mem_id)
+        result = self.get_memory(mem_id)
+        assert result is not None, f"add_memory: just-inserted {mem_id} not found"
+        return result
 
     def get_memory(self, mem_id: str) -> dict[str, Any] | None:
         conn = self._get_conn()
@@ -209,20 +193,3 @@ class SQLiteStore:
         else:
             row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
         return row[0] if row else 0
-
-    # ── (conversation persistence moved to conversation/store.py) ─────────
-
-    # ── Helpers ──────────────────────────────────────────────────────────
-
-    def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
-        d = dict(row)
-        # Decode JSON fields
-        for key in ("tags", "metadata"):
-            if key in d and isinstance(d[key], str):
-                try:
-                    d[key] = json.loads(d[key])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        # Remove internal rowid from public output
-        d.pop("rowid", None)
-        return d

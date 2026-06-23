@@ -26,8 +26,8 @@ class ConversationService:
     def update(self, conv_id: str, title: str | None = None, metadata: dict | None = None) -> dict[str, Any] | None:
         return self.store.update(conv_id, title, metadata)
 
-    def list(self, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-        return self.store.list(limit, offset)
+    def list_conversations(self, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+        return self.store.list_conversations(limit, offset)
 
     def add_message(self, conv_id: str, role: str, content: str, metadata: dict | None = None) -> dict[str, Any]:
         return self.store.add_message(conv_id, role, content, metadata)

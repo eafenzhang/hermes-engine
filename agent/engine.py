@@ -6,7 +6,6 @@ Copyright (c) NousResearch — used under Apache 2.0 license.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -52,24 +51,38 @@ class AgentEngine:
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
-        """Execute a single conversation turn (non-streaming)."""
+        """Execute a single conversation turn (non-streaming).
+
+        Raises ServiceError when the provider is unavailable or the call fails.
+        """
         provider_name = provider_name or self.default_provider
         model = model or self.default_model
 
         provider = registry.get(provider_name)
         if not provider:
-            raise ServiceError(f"Provider '{provider_name}' not available")
+            raise ServiceError(
+                f"Provider '{provider_name}' not available",
+                code="PROVIDER_UNAVAILABLE",
+            )
 
-        # Inject system prompt if not present
         full_messages = self._prepare_messages(messages)
 
-        result = await provider.chat_completion(
-            messages=full_messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-        )
+        try:
+            result = await provider.chat_completion(
+                messages=full_messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+            )
+        except (ServiceError, Exception) as exc:
+            logger.exception("Provider '%s' call failed", provider_name)
+            if isinstance(exc, ServiceError):
+                raise
+            raise ServiceError(
+                f"Provider call failed: {exc}",
+                code="PROVIDER_ERROR",
+            ) from exc
 
         return result
 
@@ -82,7 +95,11 @@ class AgentEngine:
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ) -> AsyncIterator[str]:
-        """Execute a single conversation turn (SSE streaming)."""
+        """Execute a single conversation turn (SSE streaming).
+
+        Errors are yielded as SSE error events rather than raised, so the
+        stream remains consumable by the client.
+        """
         provider_name = provider_name or self.default_provider
         model = model or self.default_model
 
@@ -93,14 +110,18 @@ class AgentEngine:
 
         full_messages = self._prepare_messages(messages)
 
-        async for chunk in provider.chat_completion_stream(
-            messages=full_messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tools,
-        ):
-            yield chunk
+        try:
+            async for chunk in provider.chat_completion_stream(  # type: ignore[attr-defined]
+                messages=full_messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+            ):
+                yield chunk
+        except Exception as exc:
+            logger.exception("Provider '%s' stream call failed", provider_name)
+            yield f"data: {json.dumps({'type': 'error', 'content': f'Provider error: {exc}'})}\n\n"
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Ensure system prompt is present in the message list."""
