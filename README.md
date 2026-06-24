@@ -6,7 +6,7 @@
 [![CI](https://github.com/eafenzhang/hermes-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/eafenzhang/hermes-engine/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![mypy](https://img.shields.io/badge/mypy-0%20errors-green)](https://mypy-lang.org/)
-[![tests](https://img.shields.io/badge/tests-71%20passed-brightgreen)](https://github.com/eafenzhang/hermes-engine/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-105%20passed-brightgreen)](https://github.com/eafenzhang/hermes-engine/actions/workflows/ci.yml)
 
 ---
 
@@ -71,6 +71,12 @@ HERMES_ANTHROPIC_API_KEY=sk-ant-xxx \
 HERMES_API_TOKEN=my-secret-token \
 HERMES_PORT=3000 \
 python main.py
+
+# 或 Docker 一行启动
+docker compose up -d
+
+# 带 Redis 事件总线
+docker compose --profile redis up -d
 ```
 
 ### API 一览 / API at a Glance
@@ -80,12 +86,15 @@ python main.py
 | `POST` | `/api/agent/chat` | Agent 对话 (非流式 non-streaming) |
 | `POST` | `/api/agent/chat/stream` | Agent 对话 (SSE 流式 streaming) |
 | `GET/POST` | `/api/memories` | 记忆 CRUD + 搜索 Memory CRUD + search |
+| `POST` | `/api/memories/curator/run` | 运行记忆整理 (可选 `use_llm` 参数) Run curator |
 | `GET/POST` | `/api/conversations` | 对话管理 Conversation management |
 | `GET/POST` | `/api/skills` | Skill 管理 Skill management |
 | `POST` | `/api/skills/match` | Skill 关键词匹配 Keyword match |
 | `GET` | `/api/tools` | 内置工具列表 Built-in tool list |
 | `POST` | `/api/tools/execute` | 执行工具 Execute a tool |
 | `GET/POST` | `/api/mcp/servers` | MCP 服务器管理 MCP server management |
+| `GET` | `/api/mcp/servers/{name}/health` | 单个 MCP 服务器健康检查 |
+| `GET` | `/api/mcp/health` | 全部 MCP 服务器批量探测 |
 | `GET/POST` | `/api/providers` | Provider 列表 + 直接调用 List + direct call |
 | `GET` | `/api/health` | 健康检查 Health check |
 | `WS` | `/ws` | WebSocket 事件 Event bus |
@@ -98,11 +107,15 @@ python main.py
 | `HERMES_PORT` | `8080` | 监听端口 Listen port |
 | `HERMES_DEBUG` | `false` | 调试模式 Debug mode |
 | `HERMES_DATA_DIR` | `~/.hermes-engine` | 数据目录 Data directory |
-| `HERMES_API_TOKEN` | (空/empty) | API 认证 Token (空=不启用) |
+| `HERMES_API_TOKEN` | (空/empty) | API 认证 Token (空=本地模式不启用) |
 | `HERMES_ANTHROPIC_API_KEY` | (空/empty) | Anthropic API Key |
 | `HERMES_OPENAI_API_KEY` | (空/empty) | OpenAI API Key |
 | `HERMES_GEMINI_API_KEY` | (空/empty) | Google Gemini API Key |
 | `HERMES_EXTRA_ALLOWED_COMMANDS` | `[]` | 额外允许执行的命令 Additional whitelisted commands |
+| `HERMES_MCP_TIMEOUT` | `30.0` | MCP 服务器连接超时（秒）Connection timeout for MCP servers |
+| `HERMES_EVENT_BACKEND` | `memory` | 事件总线后端 (`memory` / `redis`)，Redis 需额外安装 `redis>=5.0` |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis 连接 URL（仅 `HERMES_EVENT_BACKEND=redis` 时使用） |
+| `HERMES_CORS_ORIGINS` | `*` | CORS 允许源（逗号分隔，如 `http://localhost:3000`） |
 
 ---
 
@@ -111,8 +124,8 @@ python main.py
 ### 测试 / Testing
 
 ```bash
-pytest                    # 71 tests
-mypy .                   # 0 errors (71 source files)
+pytest                    # 105 tests
+mypy .                   # 0 errors (75 source files)
 ruff check .             # Lint check
 ```
 
@@ -144,7 +157,7 @@ hermes-engine/
 ├── shared/             # 共享模型 / 错误 / 事件 / DI / 可观测性
 ├── skill/              # Skill 发现与匹配
 ├── tools/              # 内置工具 (读文件/写文件/执行命令)
-├── tests/              # 71 个 Pytest 用例
+├── tests/              # 105 个 Pytest 用例（认证/CURD/流式/MCP/Curator/Event 总线）
 ├── main.py             # FastAPI 入口
 ├── pyproject.toml      # 项目配置
 ├── .pre-commit-config.yaml
@@ -175,6 +188,6 @@ Apache 2.0 — 基于 NousResearch Hermes Agent 改编 / adapted from NousResear
 | 架构 Architecture | **A** |
 | 代码质量 Code Quality | **A** |
 | 安全性 Security | **A-** |
-| 测试 Tests | **A** |
-| 工程化 Engineering | **A-** |
-| **综合 Overall** | **A** |
+| 测试 Tests | **A** → 105 passed / coverage ≥75% |
+| 工程化 Engineering | **A** → Docker + Graceful Shutdown + CORS |
+| **综合 Overall** | **A+** |

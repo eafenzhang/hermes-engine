@@ -41,8 +41,14 @@ class Settings(BaseSettings):
 
     @property
     def local_mode(self) -> bool:
-        """When True, skip authentication — intended for desktop embedding."""
-        return True
+        """Whether authentication is skipped (desktop / local embedding).
+
+        Local mode is active when *no* API token is configured. Once an
+        operator sets ``HERMES_API_TOKEN``, ``local_mode`` flips to ``False``
+        and every request (except public health checks) must authenticate —
+        matching the behaviour enforced by ``AuthMiddleware``.
+        """
+        return not bool(self.api_token)
 
     # ── Security ─────────────────────────────────────────────────────────
     api_token: str = ""
@@ -56,3 +62,9 @@ class Settings(BaseSettings):
 
     # Additional allowed base directories for file read/write tools.
     extra_allowed_dirs: list[str] = []
+
+    # MCP server connection timeout in seconds.
+    mcp_timeout: float = 30.0
+
+    # CORS — comma-separated origins (e.g. "http://localhost:3000,https://app.com")
+    cors_origins: list[str] = ["*"]

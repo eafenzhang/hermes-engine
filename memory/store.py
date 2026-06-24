@@ -173,6 +173,10 @@ class SQLiteStore(SQLiteBase):
         if not to_set:
             return self.get_memory(mem_id)
 
+        # Serialise tags to JSON, matching how add_memory stores them.
+        if "tags" in to_set:
+            to_set["tags"] = json.dumps(to_set["tags"] or [])
+
         to_set["updated_at"] = time.time()
         set_clause = ", ".join(f"{k} = ?" for k in to_set)
         conn.execute(f"UPDATE memories SET {set_clause} WHERE id = ?",

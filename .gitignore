@@ -14,6 +14,9 @@ venv/
 .vscode/
 .idea/
 
+# Build
+*.egg-info/
+
 # Data
 *.db
 *.db-wal

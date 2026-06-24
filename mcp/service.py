@@ -10,7 +10,9 @@ from mcp.bridge import bridge
 class MCPService:
     """High-level MCP operations."""
 
-    def add_server(self, name: str, url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    def add_server(
+        self, name: str, url: str, headers: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         conn = bridge.add_server(name, url, headers)
         return conn.to_dict()
 
@@ -23,5 +25,13 @@ class MCPService:
     async def list_all_tools(self) -> list[dict[str, Any]]:
         return await bridge.list_all_tools()
 
-    async def call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> Any:
+    async def call_tool(
+        self, server: str, tool: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return await bridge.call_tool(server, tool, arguments or {})
+
+    async def check_server(self, name: str) -> dict[str, Any] | None:
+        return await bridge.check_server(name)
+
+    async def check_all_servers(self) -> list[dict[str, Any]]:
+        return await bridge.check_all_servers()

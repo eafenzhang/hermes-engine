@@ -1,0 +1,15 @@
+# ── Docker ignore — keep the image lean ─────────────────────────────────
+.git/
+.gitignore
+.github/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
+tmp/
+*.md
+Makefile
+.pre-commit-config.yaml

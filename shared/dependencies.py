@@ -36,7 +36,13 @@ def get_memory_service(request: Request):
     from memory.service import MemoryService
 
     settings: Settings = request.app.state.settings
-    return MemoryService(db_path=settings.db_path)
+    return MemoryService(
+        db_path=settings.db_path,
+        curator_enabled=settings.curator_enabled,
+        curator_interval_messages=settings.curator_interval_messages,
+        curator_provider=settings.curator_provider,
+        curator_model=settings.curator_model,
+    )
 
 
 # ── Conversation ────────────────────────────────────────────────────────

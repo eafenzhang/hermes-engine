@@ -81,7 +81,7 @@ async def curator_state(service=Depends(get_memory_service)):
 
 
 @router.post("/curator/run")
-async def run_curator(service=Depends(get_memory_service)):
-    report = await service.run_curator()
+async def run_curator(use_llm: bool = False, service=Depends(get_memory_service)):
+    report = await service.run_curator(use_llm=use_llm)
     await bus.publish_domain("memory", "curator.run", data=report)
     return ApiResponse(data=report, message="Curator run complete")

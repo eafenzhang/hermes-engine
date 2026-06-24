@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 
 from config.settings import Settings
 from shared.errors import (
@@ -33,21 +34,24 @@ logger = logging.getLogger(__name__)
 class AuthMiddleware(BaseHTTPMiddleware):
     """Optional Bearer-token authentication.
 
-    When ``HERMES_API_TOKEN`` is set, every request (except ``/api/health``
-    and WebSocket ``/ws``) must include ``Authorization: Bearer <token>``.
-    When the token is empty (default) authentication is skipped entirely.
+    Authentication is controlled by ``settings.local_mode`` (derived from
+    ``HERMES_API_TOKEN``): when no token is configured the engine runs in
+    local mode and every request is allowed — intended for desktop embedding.
+    When a token *is* set, every request (except ``/api/health`` and the
+    WebSocket ``/ws``) must include ``Authorization: Bearer <token>``.
     """
 
     _PUBLIC_PATHS = frozenset({"/api/health"})
 
     async def dispatch(self, request: Request, call_next):
         settings: Settings = request.app.state.settings
-        token = settings.api_token
-        if not token or request.url.path in self._PUBLIC_PATHS:
+        # Local mode (no API token configured) skips authentication entirely.
+        # Public health checks are always exempt.
+        if settings.local_mode or request.url.path in self._PUBLIC_PATHS:
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != token:
+        if not auth.startswith("Bearer ") or auth[7:] != settings.api_token:
             from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=401,
@@ -120,9 +124,19 @@ async def lifespan(app: FastAPI):
     )
     yield
 
-    # ── Cleanup ──────────────────────────────────────────────────────────
-    from mcp.bridge import bridge as mcp_bridge
-    await mcp_bridge.close_all()
+    # ── Cleanup (guaranteed to run, even on exception) ─────────────────────
+    try:
+        from mcp.bridge import bridge as mcp_bridge
+        await mcp_bridge.close_all()
+    except Exception:
+        logger.exception("MCP bridge cleanup failed — continuing shutdown")
+
+    try:
+        from shared.event import bus
+        await bus.backend.close()
+    except Exception:
+        logger.exception("EventBus backend cleanup failed — continuing shutdown")
+
     logger.info("Hermes Engine shut down.")
 
 
@@ -142,6 +156,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from shared.observability import setup_metrics, setup_tracing
     setup_metrics(app)
     setup_tracing(app)
+
+    # ── CORS ──────────────────────────────────────────────────────────────
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     # ── Middleware ────────────────────────────────────────────────────────
     app.add_middleware(AuthMiddleware)
@@ -187,6 +211,7 @@ def main() -> None:
         host=settings.host,
         port=settings.port,
         log_level="debug" if settings.debug else "info",
+        timeout_graceful_shutdown=10,
     )
 
 

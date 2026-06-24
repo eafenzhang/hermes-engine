@@ -12,9 +12,22 @@ from memory.curator import Curator
 class MemoryService:
     """High-level memory operations — wraps store + curator."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        curator_enabled: bool = True,
+        curator_interval_messages: int = 10,
+        curator_provider: str = "anthropic",
+        curator_model: str = "claude-sonnet-4-20250514",
+    ) -> None:
         self.store = SQLiteStore(db_path)
-        self.curator = Curator(store=self.store)
+        self.curator = Curator(
+            store=self.store,
+            enabled=curator_enabled,
+            interval_messages=curator_interval_messages,
+            llm_provider=curator_provider,
+            llm_model=curator_model,
+        )
 
     # ── Memory operations ────────────────────────────────────────────────
 
@@ -41,8 +54,8 @@ class MemoryService:
 
     # ── Curator ──────────────────────────────────────────────────────────
 
-    async def run_curator(self) -> dict[str, Any]:
-        return await self.curator.run()
+    async def run_curator(self, use_llm: bool = False) -> dict[str, Any]:
+        return await self.curator.run(use_llm=use_llm)
 
     def get_curator_state(self) -> dict[str, Any]:
         return self.curator.get_state()

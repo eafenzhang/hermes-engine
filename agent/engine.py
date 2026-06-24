@@ -75,10 +75,11 @@ class AgentEngine:
                 max_tokens=max_tokens,
                 tools=tools,
             )
-        except (ServiceError, Exception) as exc:
+        except ServiceError:
+            # Already a domain error — propagate unchanged.
+            raise
+        except Exception as exc:
             logger.exception("Provider '%s' call failed", provider_name)
-            if isinstance(exc, ServiceError):
-                raise
             raise ServiceError(
                 f"Provider call failed: {exc}",
                 code="PROVIDER_ERROR",

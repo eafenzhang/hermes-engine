@@ -30,6 +30,20 @@ async def remove_server(name: str, service=Depends(get_mcp_service)):
     return ApiResponse(message="MCP server removed")
 
 
+@router.get("/servers/{name}/health")
+async def server_health(name: str, service=Depends(get_mcp_service)):
+    result = await service.check_server(name)
+    if result is None:
+        raise NotFoundError(f"MCP server '{name}' not found")
+    return ApiResponse(data=result)
+
+
+@router.get("/health")
+async def all_servers_health(service=Depends(get_mcp_service)):
+    result = await service.check_all_servers()
+    return ApiResponse(data=result)
+
+
 @router.get("/tools")
 async def list_mcp_tools(service=Depends(get_mcp_service)):
     tools = await service.list_all_tools()

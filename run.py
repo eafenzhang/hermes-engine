@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Convenience runner — `python run.py` starts the engine.
 
+This is a thin CLI wrapper around :func:`main.main`, which contains the
+actual FastAPI + uvicorn startup logic. The two entry points are
+intentionally split:
+
+* ``main.py``  — application factory (``create_app``) + ``main()`` startup.
+* ``run.py``   — argparse CLI that maps flags to ``HERMES_*`` env vars and
+                 delegates to ``main.main()``.
+
+Either ``python run.py`` or ``python main.py`` starts the server; the
+Makefile uses ``run.py`` for its ``--debug`` convenience flag.
+
 Usage:
     python run.py                  # production (127.0.0.1:8080)
     python run.py --debug          # debug mode with verbose logging

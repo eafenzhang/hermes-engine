@@ -1,0 +1,43 @@
+# ── Hermes Engine — Docker Compose ──────────────────────────────────────
+#
+# Quick start:  docker compose up -d
+# With Redis:   docker compose --profile redis up -d
+#
+# To enable authentication, set HERMES_API_TOKEN in .env or shell env.
+# ------------------------------------------------------------------------
+
+services:
+  hermes-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HERMES_PORT:-8080}:8080"
+    environment:
+      - HERMES_HOST=0.0.0.0
+      - HERMES_PORT=8080
+      - HERMES_DEBUG=${HERMES_DEBUG:-false}
+      - HERMES_API_TOKEN=${HERMES_API_TOKEN:-}
+      - HERMES_ANTHROPIC_API_KEY=${HERMES_ANTHROPIC_API_KEY:-}
+      - HERMES_OPENAI_API_KEY=${HERMES_OPENAI_API_KEY:-}
+      - HERMES_GEMINI_API_KEY=${HERMES_GEMINI_API_KEY:-}
+      - HERMES_EVENT_BACKEND=${HERMES_EVENT_BACKEND:-memory}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+    volumes:
+      - hermes_data:/home/app/.hermes-engine
+    restart: unless-stopped
+
+  # Redis — only started when the "redis" profile is active
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  hermes_data:
+  redis_data:
