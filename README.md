@@ -62,7 +62,34 @@ cd hermes-engine
 pip install -e ".[dev]"
 ```
 
-### 运行 / Run
+### 接入桌面端 / Desktop Client
+
+Hermes Engine 暴露了一个 **OpenAI 兼容端点** `/v1/chat/completions`，任何支持自定义 API 地址的桌面端都可以直接连接。
+
+#### CodePilot（推荐）
+
+```bash
+# 1. 安装 CodePilot
+# 从 https://github.com/op7418/CodePilot/releases 下载桌面版
+
+# 2. 在 CodePilot Settings → Providers 中添加：
+#    - 类型: OpenAI Compatible
+#    - API 地址: http://127.0.0.1:8080/v1
+#    - API Key: 留空（或填入 HERMES_API_TOKEN 的值）
+#    - 模型: claude-sonnet-4 / gpt-4o / gemini-2.5-pro
+#
+#    Hermes Engine 会根据模型名称自动路由到对应的 Provider。
+```
+
+模型 → Provider 自动路由规则：
+
+| 模型前缀 | 路由到 |
+|----------|--------|
+| `claude-*` | Anthropic |
+| `gpt-*` / `o1` / `o3` / `o4-*` | OpenAI |
+| `gemini-*` | Google Gemini |
+| `deepseek-*` | DeepSeek (OpenAI 兼容) |
+| 其他 | fallback 到 Anthropic |
 
 ```bash
 # 默认 127.0.0.1:8080，无需认证
@@ -99,6 +126,7 @@ docker compose --profile redis up -d
 | `GET/POST` | `/api/mcp/servers` | MCP 服务器管理 MCP server management |
 | `GET` | `/api/mcp/servers/{name}/health` | 单个 MCP 服务器健康检查 |
 | `GET` | `/api/mcp/health` | 全部 MCP 服务器批量探测 |
+| `POST` | `/v1/chat/completions` | **OpenAI 兼容** — 供 CodePilot / LobeChat 等桌面端直接接入 |
 | `GET/POST` | `/api/providers` | Provider 列表 + 直接调用 List + direct call |
 | `GET` | `/api/health` | 健康检查 Health check |
 | `WS` | `/ws` | WebSocket 事件 Event bus |
