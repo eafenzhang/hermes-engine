@@ -7,6 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/)
 [![mypy](https://img.shields.io/badge/mypy-0%20errors-green)](https://mypy-lang.org/)
 [![tests](https://img.shields.io/badge/tests-105%20passed-brightgreen)](https://github.com/eafenzhang/hermes-engine/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/badge/coverage-%E2%89%A575%25-yellow)](https://github.com/eafenzhang/hermes-engine/actions/workflows/ci.yml)
 
 ---
 
@@ -21,11 +22,12 @@
 | 功能 Feature | 描述 Description |
 |-------------|-----------------|
 | **AI Agent** | 多 Provider 对话 + 工具调用 + SSE 流式响应 |
-| **Memory** | SQLite FTS5 全文搜索 + LLM 驱动的记忆管理 (Curator) |
+| **Memory** | SQLite FTS5 全文搜索 + LLM 驱动的语义记忆管理 (Curator) |
 | **Conversation** | 多轮对话持久化，支持消息增删查 |
 | **Skills** | 文件系统 Skill 发现、创建、关键词匹配 |
-| **MCP Bridge** | 连接外部 MCP 服务器，聚合远程工具 |
-| **Event Bus** | WebSocket 实时事件广播 (domain.actionName) |
+| **MCP Bridge** | 连接外部 MCP 服务器，聚合远程工具，带健康检查与超时保护 |
+| **Event Bus** | WebSocket 实时事件广播，支持内存/Redis 可插拔后端 |
+| **Docker 部署** | 一行命令启动 (`docker compose up -d`)，可选 Redis 事件总线集成 |
 
 ### 架构 / Architecture
 
@@ -64,18 +66,20 @@ pip install -e ".[dev]"
 
 ```bash
 # 默认 127.0.0.1:8080，无需认证
-python main.py
+python run.py
+
+# 调试模式（详细日志）
+python run.py --debug
 
 # 或通过环境变量配置
 HERMES_ANTHROPIC_API_KEY=sk-ant-xxx \
 HERMES_API_TOKEN=my-secret-token \
-HERMES_PORT=3000 \
-python main.py
+python run.py --port 3000
 
 # 或 Docker 一行启动
 docker compose up -d
 
-# 带 Redis 事件总线
+# 带 Redis 事件总线（多实例扩展用）
 docker compose --profile redis up -d
 ```
 
@@ -124,9 +128,22 @@ docker compose --profile redis up -d
 ### 测试 / Testing
 
 ```bash
-pytest                    # 105 tests
+pytest                    # 105 tests (coverage: pytest --cov)
 mypy .                   # 0 errors (75 source files)
 ruff check .             # Lint check
+```
+
+### 部署 / Deployment
+
+```bash
+# Docker 一键启动（默认 + observability extras）
+docker compose up -d
+
+# 带 Redis 事件总线（水平扩展多实例时用）
+docker compose --profile redis up -d
+
+# 自定义环境变量
+HERMES_API_TOKEN=my-token HERMES_PORT=8080 docker compose up -d
 ```
 
 ### 预提交 / Pre-commit
@@ -138,9 +155,9 @@ pre-commit install
 
 ### CI/CD
 
-GitHub Actions 自动运行 lint → typecheck → test (3.11/3.12/3.13) → security scan。
+GitHub Actions 自动运行 lint → typecheck → test (3.11/3.12/3.13) → coverage ≥75% → security scan。
 
-GitHub Actions auto-runs lint → typecheck → test (3.11/3.12/3.13) → security scan.
+GitHub Actions auto-runs lint → typecheck → test (3.11/3.12/3.13) → coverage ≥75% → security scan.
 
 ---
 
@@ -152,12 +169,14 @@ hermes-engine/
 ├── config/             # Pydantic Settings
 ├── conversation/       # 对话存储 + 路由
 ├── mcp/                # MCP Bridge + 路由
-├── memory/             # SQLite + FTS5 记忆存储
+├── memory/             # SQLite + FTS5 记忆存储 + Curator (LLM 语义合并)
 ├── provider/           # AI Provider 适配器 (Anthropic/OpenAI/Gemini)
-├── shared/             # 共享模型 / 错误 / 事件 / DI / 可观测性
+├── shared/             # 共享模型 / 错误 / 事件总线(可插拔后端) / DI / 可观测性
 ├── skill/              # Skill 发现与匹配
 ├── tools/              # 内置工具 (读文件/写文件/执行命令)
-├── tests/              # 105 个 Pytest 用例（认证/CURD/流式/MCP/Curator/Event 总线）
+├── tests/              # 105 个 Pytest 用例（认证/CRUD/流式/MCP/Curator/Event 总线）
+├── Dockerfile          # 生产容器镜像
+├── docker-compose.yml  # 一键启动（含可选 Redis）
 ├── main.py             # FastAPI 入口
 ├── pyproject.toml      # 项目配置
 ├── .pre-commit-config.yaml
