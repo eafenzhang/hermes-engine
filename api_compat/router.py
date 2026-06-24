@@ -1,9 +1,8 @@
 """OpenAI-compatible /v1/chat/completions adapter.
 
 Translates between the OpenAI Chat Completions wire format and Hermes
-Engine's internal provider-agnostic format, so desktop agents such as
-CodePilot, LobeChat, and LibreChat can use this engine as a drop-in
-backend.
+Engine's internal provider-agnostic format, so any OpenAI-compatible
+client can use this engine as a drop-in backend.
 
 Provider is auto-selected from the requested model name (e.g. ``gpt-4``
 → OpenAI, ``claude-*`` → Anthropic, ``gemini-*`` → Gemini) with a
