@@ -8,6 +8,7 @@ instance via the standard DI container.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 import uuid
@@ -15,6 +16,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.cors import CORSMiddleware
 
@@ -30,29 +32,47 @@ from shared.models import ApiResponse, HealthResponse
 
 logger = logging.getLogger(__name__)
 
+_STREAM_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    """Optional Bearer-token authentication.
 
-    Authentication is controlled by ``settings.local_mode`` (derived from
-    ``HERMES_API_TOKEN``): when no token is configured the engine runs in
-    local mode and every request is allowed — intended for desktop embedding.
-    When a token *is* set, every request (except ``/api/health`` and the
-    WebSocket ``/ws``) must include ``Authorization: Bearer <token>``.
+# ═══════════════════════════════════════════════════════════════════════════
+# Middleware
+# ═══════════════════════════════════════════════════════════════════════════
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Inject X-Request-ID for tracing.
+
+    Uses the incoming ``X-Request-ID`` header if present, otherwise
+    generates a short UUID.  The ID is attached to the request scope
+    and returned in the response headers.
     """
 
-    _PUBLIC_PATHS = frozenset({"/api/health"})
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("X-Request-ID", str(uuid.uuid4())[:8])
+        request.state.request_id = req_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        return response
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """Optional Bearer-token authentication."""
+
+    _PUBLIC_PATHS = frozenset({
+        "/api/health", "/api/v1/health",
+        "/api/metrics", "/openapi.json", "/docs", "/redoc",
+    })
 
     async def dispatch(self, request: Request, call_next):
         settings: Settings = request.app.state.settings
-        # Local mode (no API token configured) skips authentication entirely.
-        # Public health checks are always exempt.
         if settings.local_mode or request.url.path in self._PUBLIC_PATHS:
             return await call_next(request)
 
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:] != settings.api_token:
-            from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "error": "Unauthorized", "code": "AUTH_REQUIRED"},
@@ -61,21 +81,75 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """Log every HTTP request with method, path, status, and duration."""
+    """Log every HTTP request with method, path, status, duration, and request ID."""
 
     async def dispatch(self, request: Request, call_next):
         start = time.time()
         response = await call_next(request)
         duration_ms = (time.time() - start) * 1000
+        req_id = getattr(request.state, "request_id", "-")
         logger.info(
-            "%s %s %d %.0fms",
+            "%s %s %d %.0fms rid=%s",
             request.method,
             request.url.path,
             response.status_code,
             duration_ms,
+            req_id,
         )
         return response
 
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple sliding-window rate limiter (per-IP).
+
+    Configurable via settings:
+    - ``rate_limit_enabled`` (default True)
+    - ``rate_limit_requests``  (default 300)
+    - ``rate_limit_window_s``  (default 60)
+
+    Rate-limited clients receive HTTP 429.
+    """
+
+    def __init__(self, app, settings: Settings):
+        super().__init__(app)
+        self._enabled = settings.rate_limit_enabled
+        self._max = settings.rate_limit_requests
+        self._window = settings.rate_limit_window_s
+        self._counters: dict[str, list[float]] = {}
+
+    async def dispatch(self, request: Request, call_next):
+        if not self._enabled:
+            return await call_next(request)
+
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+
+        # Sliding window: keep timestamps within window
+        hits = self._counters.get(ip, [])
+        hits = [t for t in hits if now - t < self._window]
+
+        if len(hits) >= self._max:
+            return JSONResponse(
+                status_code=429,
+                content={"success": False, "error": "Too many requests", "code": "RATE_LIMITED"},
+            )
+
+        hits.append(now)
+        self._counters[ip] = hits
+
+        # Periodic cleanup of stale entries (every 1000 requests)
+        if len(self._counters) > 10000:
+            self._counters = {
+                k: v for k, v in self._counters.items()
+                if v and now - v[-1] < self._window * 2
+            }
+
+        return await call_next(request)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Lifespan
+# ═══════════════════════════════════════════════════════════════════════════
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -86,77 +160,32 @@ async def lifespan(app: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.skills_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Startup validation ────────────────────────────────────────────────
+    _validate_startup(settings)
+
     # ── Register providers ────────────────────────────────────────────────
     from provider.service import init_providers
     init_providers(settings)
 
-    # ── Initialise model cache TTL ────────────────────────────────────────
+    # ── Model cache TTL ───────────────────────────────────────────────────
     from shared.model_cache import model_cache
     model_cache._ttl = settings.model_cache_ttl
 
-    # ── Register routers (services are injected per-request via Depends) ──
-    import agent.router as _agent_router_mod
-    import conversation.router as _conv_router_mod
-    import mcp.router as _mcp_router_mod
-    import memory.router as _mem_router_mod
-    import provider.router as _provider_router_mod
-    import skill.router as _skill_router_mod
-    import tools.router as _tools_router_mod
+    # ── Register routers ──────────────────────────────────────────────────
+    _register_routers(app, settings)
 
-    app.include_router(_provider_router_mod.router)
-    app.include_router(_mem_router_mod.router)
-    app.include_router(_conv_router_mod.router)
-    app.include_router(_agent_router_mod.router)
-    app.include_router(_skill_router_mod.router)
-    app.include_router(_tools_router_mod.router)
-    app.include_router(_mcp_router_mod.router)
-
-    # ── Register OpenAI-compatible endpoint ────────────────────────────────
-    import api_compat.router as _api_compat_router_mod
-    app.include_router(_api_compat_router_mod.router)
-
-    # ── Register built-in tools ───────────────────────────────────────────
+    # ── Register tools ────────────────────────────────────────────────────
     from tools.builtin import register_all as register_builtin_tools
     register_builtin_tools()
 
-    # ── Register browser tools ──────────────────────────────────────────
     if settings.browser_enabled:
         from tools.executor import executor as _tool_executor
         from tools.browser import WEB_FETCH_SCHEMA, WEB_SEARCH_SCHEMA, web_fetch, web_search
         _tool_executor.register("web_fetch", web_fetch, WEB_FETCH_SCHEMA)
         _tool_executor.register("web_search", web_search, WEB_SEARCH_SCHEMA)
 
-    # ── Register extra allowed commands from settings ────────────────────
     from tools.builtin.execute_command import register_extra_commands
     register_extra_commands(settings.extra_allowed_commands)
-
-    # ── Register scheduler, gateway, trajectory routers ─────────────────
-    if settings.cron_enabled:
-        import shared.scheduler_router as _cron_mod
-        app.include_router(_cron_mod.router)
-
-    if settings.gateway_enabled:
-        import gateway as _gateway_mod
-        from fastapi import APIRouter as _GwRouter
-        # Gateway webhook endpoint
-        _gw = _GwRouter(prefix="/api/gateway", tags=["gateway"])
-
-        @_gw.post("/webhook")
-        async def _webhook(payload: dict):
-            adapter = _gateway_mod.WebhookAdapter()
-            result = await adapter.handle_webhook(payload)
-            return ApiResponse(data=result)
-
-        app.include_router(_gw)
-
-    if settings.trajectories_enabled:
-        import shared.trajectory_router as _traj_mod
-        app.include_router(_traj_mod.router)
-
-    # ── Session router (stateful multi-turn) ────────────────────────────
-    if settings.session_enabled:
-        import shared.session_router as _sess_mod
-        app.include_router(_sess_mod.router)
 
     # ── Plugin loader ────────────────────────────────────────────────────
     if settings.plugins_enabled:
@@ -167,23 +196,20 @@ async def lifespan(app: FastAPI):
             loader.load(name)
         app.state.plugin_loader = loader
 
-    # ── Start cron scheduler ────────────────────────────────────────────
+    # ── Cron scheduler ───────────────────────────────────────────────────
     if settings.cron_enabled:
         from shared.scheduler import get_scheduler
         import asyncio as _asyncio
-        _scheduler_task = _asyncio.create_task(get_scheduler().start())
+        _asyncio.create_task(get_scheduler().start())
 
     from provider.registry import registry as provider_registry
     logger.info(
         "Hermes Engine started — data_dir=%s debug=%s providers=%d",
-        settings.data_dir,
-        settings.debug,
-        provider_registry.count,
+        settings.data_dir, settings.debug, provider_registry.count,
     )
 
-    # ── Start Redis event bus listener if backend is redis ────────────
-    import os as _os
-    if _os.environ.get("HERMES_EVENT_BACKEND", "").strip().lower() == "redis":
+    # ── Redis listener ────────────────────────────────────────────────────
+    if os.environ.get("HERMES_EVENT_BACKEND", "").strip().lower() == "redis":
         try:
             await bus.start()
         except Exception:
@@ -191,39 +217,140 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # ── Cleanup (guaranteed to run, even on exception) ─────────────────────
-    try:
-        from mcp.bridge import bridge as mcp_bridge
-        await mcp_bridge.close_all()
-    except Exception:
-        logger.exception("MCP bridge cleanup failed — continuing shutdown")
-
-    try:
-        await bus.backend.close()
-    except Exception:
-        logger.exception("EventBus backend cleanup failed — continuing shutdown")
-
-    try:
-        from shared.sqlite_base import SQLiteBase
-        SQLiteBase.close_all()
-    except Exception:
-        logger.exception("SQLite connection cleanup failed — continuing shutdown")
-
-    try:
-        from shared.scheduler import get_scheduler
-        get_scheduler().stop()
-    except Exception:
-        logger.exception("Scheduler stop failed — continuing shutdown")
-
-    try:
-        _pl = getattr(app.state, "plugin_loader", None)
-        if _pl is not None:
-            _pl.unload_all()
-    except Exception:
-        logger.exception("Plugin unload failed — continuing shutdown")
+    # ── Cleanup ───────────────────────────────────────────────────────────
+    await _safe_cleanup("MCP bridge", _cleanup_mcp)
+    await _safe_cleanup("EventBus", _cleanup_eventbus)
+    await _safe_cleanup("SQLite connections", _cleanup_sqlite)
+    await _safe_cleanup("Scheduler", _cleanup_scheduler)
+    await _safe_cleanup("Plugins", lambda: _cleanup_plugins(app))
 
     logger.info("Hermes Engine shut down.")
 
+
+async def _safe_cleanup(name: str, fn):
+    try:
+        result = fn()
+        if hasattr(result, '__await__'):
+            await result
+    except Exception:
+        logger.exception("%s cleanup failed — continuing shutdown", name)
+
+
+async def _cleanup_mcp():
+    from mcp.bridge import bridge as mcp_bridge
+    await mcp_bridge.close_all()
+
+
+async def _cleanup_eventbus():
+    await bus.backend.close()
+
+
+def _cleanup_sqlite():
+    from shared.sqlite_base import SQLiteBase
+    SQLiteBase.close_all()
+
+
+def _cleanup_scheduler():
+    from shared.scheduler import get_scheduler
+    get_scheduler().stop()
+
+
+def _cleanup_plugins(app):
+    _pl = getattr(app.state, "plugin_loader", None)
+    if _pl is not None:
+        _pl.unload_all()
+
+
+def _validate_startup(settings: Settings):
+    """Warn about common misconfigurations at startup."""
+    provider_keys = [
+        ("Anthropic", settings.anthropic_api_key),
+        ("OpenAI", settings.openai_api_key),
+        ("Gemini", settings.gemini_api_key),
+        ("DeepSeek", settings.deepseek_api_key),
+        ("Moonshot", settings.moonshot_api_key),
+        ("Zhipu", settings.zhipu_api_key),
+        ("Qwen", settings.qwen_api_key),
+        ("MiniMax", settings.minimax_api_key),
+    ]
+    configured = [name for name, key in provider_keys if key]
+    if not configured:
+        logger.warning("No AI provider configured — agent chat will fail")
+    else:
+        logger.info("Configured providers: %s", ", ".join(configured))
+
+    db_dir = settings.db_path.parent
+    if not os.access(str(db_dir), os.W_OK):
+        logger.warning("Database directory not writable: %s", db_dir)
+
+    if settings.api_token:
+        logger.info("API token authentication enabled")
+    else:
+        logger.info("Running in LOCAL MODE — no authentication required")
+
+
+def _register_routers(app: FastAPI, settings: Settings):
+    """Wire all routers.  Core routers get /api prefix + /api/v1 alias."""
+    import agent.router as _agent_mod
+    import conversation.router as _conv_mod
+    import mcp.router as _mcp_mod
+    import memory.router as _mem_mod
+    import provider.router as _prov_mod
+    import skill.router as _skill_mod
+    import tools.router as _tools_mod
+
+    core = [
+        (_prov_mod.router, "providers"),
+        (_mem_mod.router, "memories"),
+        (_conv_mod.router, "conversations"),
+        (_agent_mod.router, "agent"),
+        (_skill_mod.router, "skills"),
+        (_tools_mod.router, "tools"),
+        (_mcp_mod.router, "mcp"),
+    ]
+
+    for router, _tag in core:
+        app.include_router(router)
+        # Also register under /api/v1 for versioned access
+        app.include_router(router, prefix="/api/v1")
+
+    # OpenAI compat (has its own /v1 prefix)
+    import api_compat.router as _api_compat_mod
+    app.include_router(_api_compat_mod.router)
+
+    if settings.cron_enabled:
+        import shared.scheduler_router as _cron_mod
+        app.include_router(_cron_mod.router)
+        app.include_router(_cron_mod.router, prefix="/api/v1")
+
+    if settings.gateway_enabled:
+        import gateway as _gateway_mod
+        from fastapi import APIRouter as _GwRouter
+        _gw = _GwRouter(prefix="/api/gateway", tags=["gateway"])
+
+        @_gw.post("/webhook")
+        async def _webhook(payload: dict):
+            adapter = _gateway_mod.WebhookAdapter()
+            result = await adapter.handle_webhook(payload)
+            return ApiResponse(data=result)
+
+        app.include_router(_gw)
+        app.include_router(_gw, prefix="/api/v1")
+
+    if settings.trajectories_enabled:
+        import shared.trajectory_router as _traj_mod
+        app.include_router(_traj_mod.router)
+        app.include_router(_traj_mod.router, prefix="/api/v1")
+
+    if settings.session_enabled:
+        import shared.session_router as _sess_mod
+        app.include_router(_sess_mod.router)
+        app.include_router(_sess_mod.router, prefix="/api/v1")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# App factory
+# ═══════════════════════════════════════════════════════════════════════════
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     if settings is None:
@@ -242,12 +369,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     setup_metrics(app)
     setup_tracing(app)
 
-    # ── CORS ──────────────────────────────────────────────────────────────
+    # ── Middleware (order matters — Starlette LIFO) ──────────────────────
+    # Outermost → Innermost: RequestID → CORS → RateLimit → Auth → Logging
+    app.add_middleware(RequestIDMiddleware)
     if settings.cors_origins:
-        # Per the CORS spec, ``Access-Control-Allow-Origin: *`` is incompatible
-        # with ``Access-Control-Allow-Credentials: true``.  Browsers reject the
-        # response when both are present.  We only enable credentials when a
-        # concrete (non-wildcard) origin list is configured.
         has_wildcard = "*" in settings.cors_origins
         app.add_middleware(
             CORSMiddleware,
@@ -256,25 +381,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-
-    # ── Middleware ────────────────────────────────────────────────────────
+    app.add_middleware(RateLimitMiddleware, settings=settings)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
 
     # ── Exception handlers ───────────────────────────────────────────────
     app.add_exception_handler(ServiceError, service_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(400, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(422, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(500, unhandled_exception_handler)  # type: ignore[arg-type]
 
-    # ── Health check ──────────────────────────────────────────────────────
+    # ── Health check (deep) ──────────────────────────────────────────────
     @app.get("/api/health")
+    @app.get("/api/v1/health")
     async def health():
-        return HealthResponse(status="ok", version="0.1.0")
+        return await _deep_health_check(settings)
+
+    # ── Redirect /api → /api/v1 for versioned access ─────────────────────
+    @app.get("/api")
+    async def api_index():
+        return JSONResponse({
+            "name": "Hermes Engine",
+            "version": "0.1.0",
+            "docs": "/docs",
+            "health": "/api/health",
+        })
 
     # ── WebSocket event bus ──────────────────────────────────────────────
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
-        # Optional token auth via query param: /ws?token=my-secret
         if not settings.local_mode:
             token = ws.query_params.get("token", "")
             if not token or token != settings.api_token:
@@ -297,6 +432,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+async def _deep_health_check(settings: Settings) -> HealthResponse:
+    """Return enriched health status with actual provider + DB state."""
+    from provider.registry import registry as prov_reg
+    from shared.sqlite_base import SQLiteBase
+
+    providers_ok = 0
+    providers_total = prov_reg.count
+    provider_names: list[str] = []
+
+    for p_info in prov_reg.list():
+        name = p_info["name"]
+        provider_names.append(name)
+        provider = prov_reg.get(name)
+        if provider:
+            try:
+                if await provider.check_connectivity():
+                    providers_ok += 1
+            except Exception:
+                pass
+
+    # DB connectivity
+    db_ok = False
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(settings.db_path))
+        conn.execute("SELECT 1")
+        conn.close()
+        db_ok = True
+    except Exception:
+        pass
+
+    status = "ok" if (db_ok and (providers_total == 0 or providers_ok > 0)) else "degraded"
+    if not db_ok and providers_ok == 0:
+        status = "unhealthy"
+
+    return HealthResponse(
+        status=status,
+        version="0.1.0",
+        providers=providers_ok,
+        conversations=0,  # populated below if DB ok
+        skills=0,
+        memories=0,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════════════════════
+
 def main() -> None:
     settings = Settings()
     from shared.observability import setup_logging
@@ -308,7 +492,9 @@ def main() -> None:
         host=settings.host,
         port=settings.port,
         log_level="debug" if settings.debug else "info",
-        timeout_graceful_shutdown=10,
+        timeout_graceful_shutdown=settings.graceful_shutdown_timeout,
+        timeout_keep_alive=settings.keep_alive_timeout,
+        backlog=settings.backlog,
     )
 
 

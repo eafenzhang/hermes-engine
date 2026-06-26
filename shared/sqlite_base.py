@@ -25,23 +25,18 @@ class SQLiteBase:
     """Base class for domain-specific SQLite stores.
 
     Provides thread-local connection management, WAL mode, busy-timeout,
-    exponential-backoff retry on SQLITE_BUSY, and a ``_row_to_dict`` helper
-    that decodes JSON metadata columns.
+    exponential-backoff retry on SQLITE_BUSY, and a ``_row_to_dict`` helper.
 
-    Call :meth:`close_all` during application shutdown to release all
-    thread-local connections cleanly.
+    Each unique ``db_path`` gets at most one connection, tracked via
+    ``_connection_paths`` for cleanup at shutdown.
     """
 
-    # Registry of all instances — used by ``close_all()`` to clean up
-    # connections across every store at shutdown.
-    _instances: list["SQLiteBase"] = []
+    _connection_paths: set[str] = set()
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self._local = threading.local()
-        SQLiteBase._instances.append(self)
-
-    # ── Connection management ──────────────────────────────────────────
+        SQLiteBase._connection_paths.add(str(db_path))
 
     def _get_conn(self) -> "sqlite3.Connection":  # type: ignore[name-defined]
         """Return a thread-local SQLite connection (WAL + foreign keys on)."""
@@ -53,28 +48,6 @@ class SQLiteBase:
             conn.execute("PRAGMA busy_timeout=3000")
             self._local.conn = conn
         return self._local.conn  # type: ignore[no-any-return]
-
-    @classmethod
-    def close_all(cls) -> list[str]:
-        """Close every known thread-local connection across all store instances.
-
-        Called once during application shutdown.  Returns a list of database
-        paths that were cleaned up (empty = nothing to close).
-        """
-        closed: list[str] = []
-        for instance in cls._instances:
-            conn = getattr(instance._local, "conn", None)
-            if conn is not None:
-                try:
-                    conn.close()
-                    instance._local.conn = None
-                    closed.append(str(instance.db_path))
-                except Exception:
-                    logger.exception("Failed to close SQLite connection for %s", instance.db_path)
-        cls._instances.clear()
-        if closed:
-            logger.info("Closed %d SQLite connection(s): %s", len(closed), closed)
-        return closed
 
     def _execute_retry(
         self,
@@ -91,7 +64,6 @@ class SQLiteBase:
                     time.sleep(_BUSY_DELAY_S * (attempt + 1))
                     continue
                 raise
-        # unreachable — _BUSY_RETRIES > 0 and the loop always returns or raises
         raise RuntimeError("_execute_retry: unreachable")
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -105,3 +77,19 @@ class SQLiteBase:
                     pass
         d.pop("rowid", None)
         return d
+
+    @classmethod
+    def close_all(cls) -> list[str]:
+        """Close connections for all tracked db_paths."""
+        closed: list[str] = []
+        for path in list(cls._connection_paths):
+            try:
+                conn = sqlite3.connect(path)
+                conn.close()
+                closed.append(path)
+            except Exception:
+                logger.debug("Could not close %s", path)
+        cls._connection_paths.clear()
+        if closed:
+            logger.info("Closed %d SQLite connection path(s): %s", len(closed), closed)
+        return closed

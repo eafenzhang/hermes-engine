@@ -20,6 +20,33 @@ from config.settings import Settings
 from main import create_app
 
 
+@pytest.fixture(autouse=True)
+def _clean_singletons():
+    """Reset module-level singletons between tests to prevent state leaks."""
+    yield
+    # Clear MCP bridge singleton
+    try:
+        import asyncio
+        from mcp.bridge import bridge
+        bridge._servers.clear()
+        bridge._pending_closes.clear()
+    except Exception:
+        pass
+    # Clear provider registry
+    try:
+        from provider.registry import registry
+        for name in list(registry._providers.keys()):
+            registry.remove(name)
+    except Exception:
+        pass
+    # Clear SQLite connection paths
+    try:
+        from shared.sqlite_base import SQLiteBase
+        SQLiteBase._connection_paths.clear()
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def tmp_settings() -> Settings:
     """Create Settings with temporary data directory (no API keys)."""

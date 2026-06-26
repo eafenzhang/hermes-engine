@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     session_search_max: int = 3
     cron_nl_enabled: bool = True
 
+    # ── Rate limiting ────────────────────────────────────────────────────
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = 300  # requests per window
+    rate_limit_window_s: float = 60.0  # window in seconds
+
+    # ── Production tuning ────────────────────────────────────────────────
+    graceful_shutdown_timeout: int = 30
+    keep_alive_timeout: int = 5
+    backlog: int = 2048
+
     @property
     def local_mode(self) -> bool:
         """Whether authentication is skipped (desktop / local embedding).
