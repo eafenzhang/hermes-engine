@@ -49,6 +49,9 @@ class MockProvider(ProviderBase):
     def validate_key(self) -> bool:
         return True
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
 
 class ErrorProvider(ProviderBase):
     """A fake provider that raises on every call."""
@@ -76,6 +79,9 @@ class ErrorProvider(ProviderBase):
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         raise RuntimeError("Provider stream error")
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
 
 
 @pytest.fixture(autouse=True)

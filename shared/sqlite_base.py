@@ -27,11 +27,19 @@ class SQLiteBase:
     Provides thread-local connection management, WAL mode, busy-timeout,
     exponential-backoff retry on SQLITE_BUSY, and a ``_row_to_dict`` helper
     that decodes JSON metadata columns.
+
+    Call :meth:`close_all` during application shutdown to release all
+    thread-local connections cleanly.
     """
+
+    # Registry of all instances — used by ``close_all()`` to clean up
+    # connections across every store at shutdown.
+    _instances: list["SQLiteBase"] = []
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self._local = threading.local()
+        SQLiteBase._instances.append(self)
 
     # ── Connection management ──────────────────────────────────────────
 
@@ -45,6 +53,28 @@ class SQLiteBase:
             conn.execute("PRAGMA busy_timeout=3000")
             self._local.conn = conn
         return self._local.conn  # type: ignore[no-any-return]
+
+    @classmethod
+    def close_all(cls) -> list[str]:
+        """Close every known thread-local connection across all store instances.
+
+        Called once during application shutdown.  Returns a list of database
+        paths that were cleaned up (empty = nothing to close).
+        """
+        closed: list[str] = []
+        for instance in cls._instances:
+            conn = getattr(instance._local, "conn", None)
+            if conn is not None:
+                try:
+                    conn.close()
+                    instance._local.conn = None
+                    closed.append(str(instance.db_path))
+                except Exception:
+                    logger.exception("Failed to close SQLite connection for %s", instance.db_path)
+        cls._instances.clear()
+        if closed:
+            logger.info("Closed %d SQLite connection(s): %s", len(closed), closed)
+        return closed
 
     def _execute_retry(
         self,

@@ -10,6 +10,7 @@ dependencies, suitable for single-instance / desktop embedding). A
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -116,21 +117,31 @@ class InMemoryEventBackend(EventBackend):
             except Exception:
                 logger.exception("EventBus callback failed for %s", event.name)
 
-        # WebSocket broadcast
+        # WebSocket broadcast — fan out concurrently so one slow client
+        # cannot delay events for all the others.
+        if not self._ws_connections:
+            return
+
         payload = event.to_json()
         dead: list[str] = []
-        for cid, ws in self._ws_connections.items():
+
+        async def _send_one(cid: str, ws: WebSocket) -> None:
             try:
                 await ws.send_text(payload)
             except Exception:
                 dead.append(cid)
+
+        await asyncio.gather(
+            *(_send_one(cid, ws) for cid, ws in self._ws_connections.items()),
+            return_exceptions=True,
+        )
 
         for cid in dead:
             self._ws_connections.pop(cid, None)
 
 
 class RedisEventBackend(EventBackend):
-    """Multi-instance backend via Redis pub/sub — skeleton.
+    """Multi-instance backend via Redis pub/sub.
 
     Enables horizontal scaling: when several Hermes Engine instances share a
     Redis, an event published on one instance is fanned out to the WebSocket
@@ -141,14 +152,6 @@ class RedisEventBackend(EventBackend):
     1. ``pip install redis>=5.0`` (the ``redis`` package is an optional
        dependency — not installed by default).
     2. Set ``HERMES_EVENT_BACKEND=redis`` and ``REDIS_URL=redis://host:6379/0``.
-
-    The implementation lazily imports ``redis`` so that the module loads even
-    when the package is absent; only activating this backend triggers the
-    import. A background listener bridges pub/sub messages to the local
-    WebSocket connections registered via ``subscribe_ws``.
-
-    NOTE: this is a ready-to-fill skeleton — the pub/sub wiring is stubbed
-    and raises ``NotImplementedError`` on first publish until completed.
     """
 
     CHANNEL = "hermes:events"
@@ -158,6 +161,7 @@ class RedisEventBackend(EventBackend):
         self._subscribers: dict[str, list[Callable[[DomainEvent], None]]] = {}
         self._ws_connections: dict[str, WebSocket] = {}
         self._client: Any = None  # redis.asyncio.Redis | None (lazy)
+        self._listener_task: Any = None
 
     def subscribe(self, event_name: str, callback: Callable[[DomainEvent], None]) -> None:
         self._subscribers.setdefault(event_name, []).append(callback)
@@ -188,14 +192,42 @@ class RedisEventBackend(EventBackend):
             except Exception:
                 logger.exception("EventBus callback failed for %s", event.name)
 
-        # TODO: publish event.to_json() to self.CHANNEL and have a background
-        # subscriber fan received messages out to self._ws_connections.
-        # Left as a stub to avoid introducing a hard runtime dependency.
         client = await self._ensure_client()
         await client.publish(self.CHANNEL, event.to_json())
-        logger.debug("RedisEventBackend published %s (WS fan-out not yet wired)", event.name)
+        logger.debug("RedisEventBackend published %s", event.name)
+
+    async def _start_listener(self) -> None:
+        """Background task: subscribe to Redis channel and fan events to local WS."""
+        client = await self._ensure_client()
+        pubsub = client.pubsub()
+        await pubsub.subscribe(self.CHANNEL)
+        logger.info("RedisEventBackend listener started on channel '%s'", self.CHANNEL)
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                try:
+                    data = json.loads(message["data"])
+                    payload = json.dumps(data)
+                    dead: list[str] = []
+                    for cid, ws in list(self._ws_connections.items()):
+                        try:
+                            await ws.send_text(payload)
+                        except Exception:
+                            dead.append(cid)
+                    for cid in dead:
+                        self._ws_connections.pop(cid, None)
+                except Exception:
+                    logger.debug("Redis listener: failed to process message", exc_info=True)
+        except Exception:
+            logger.exception("RedisEventBackend listener stopped unexpectedly")
+        finally:
+            await pubsub.unsubscribe(self.CHANNEL)
 
     async def close(self) -> None:
+        if self._listener_task is not None:
+            self._listener_task.cancel()
+            self._listener_task = None
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -224,6 +256,14 @@ class EventBus:
 
     def __init__(self, backend: EventBackend | None = None) -> None:
         self.backend: EventBackend = backend or _default_backend()
+
+    async def start(self) -> None:
+        """Start backend background tasks (e.g. Redis listener)."""
+        if isinstance(self.backend, RedisEventBackend):
+            import asyncio
+            self.backend._listener_task = asyncio.create_task(
+                self.backend._start_listener()
+            )
 
     def subscribe(self, event_name: str, callback: Callable[[DomainEvent], None]) -> None:
         self.backend.subscribe(event_name, callback)

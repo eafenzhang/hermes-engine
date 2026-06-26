@@ -63,10 +63,11 @@ class ConversationStore(SQLiteBase):
 
     # ── CRUD ─────────────────────────────────────────────────────────────
 
-    def create(self, title: str = "New Conversation", metadata: dict | None = None) -> dict[str, Any]:
+    def create(self, title: str = "New Conversation", metadata: dict | None = None, conv_id: str | None = None) -> dict[str, Any]:
         conn = self._get_conn()
         now = time.time()
-        conv_id = str(uuid.uuid4())
+        if conv_id is None:
+            conv_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO conversations (id, title, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             (conv_id, title, json.dumps(metadata or {}), now, now),
@@ -135,14 +136,21 @@ class ConversationStore(SQLiteBase):
         conn = self._get_conn()
         now = time.time()
         msg_id = str(uuid.uuid4())
+        md_json = json.dumps(metadata or {})
         conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (msg_id, conv_id, role, content, json.dumps(metadata or {}), now),
+            (msg_id, conv_id, role, content[:65536], md_json, now),  # 64 KiB max content
         )
         conn.execute("UPDATE conversations SET updated_at = ?, message_count = message_count + 1 WHERE id = ?",
                       (now, conv_id))
         conn.commit()
-        return {"id": msg_id, "conversation_id": conv_id, "role": role, "content": content, "created_at": now}
+
+        # Return full record consistent with create() pattern
+        row = conn.execute("SELECT rowid, * FROM messages WHERE id = ?", (msg_id,)).fetchone()
+        if row:
+            return self._row_to_dict(row)
+        return {"id": msg_id, "conversation_id": conv_id, "role": role, "content": content[:65536],
+                "metadata": metadata or {}, "created_at": now}
 
     def get_messages(self, conv_id: str, limit: int = 100, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
         conv = self.get(conv_id)

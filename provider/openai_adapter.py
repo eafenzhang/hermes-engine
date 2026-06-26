@@ -96,13 +96,32 @@ class OpenAIAdapter(ProviderBase):
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     async def check_connectivity(self) -> bool:
+        """Lightweight connectivity check using model listing.
+
+        Uses ``models.list()`` rather than a chat completion so the check
+        works across all OpenAI-compatible backends without needing to know
+        a valid model name ahead of time — and without consuming tokens.
+        """
         client = self._get_client()
         try:
-            await client.chat.completions.create(
-                model="gpt-4o-mini",
-                max_tokens=1,
-                messages=[{"role": "user", "content": "ping"}],
-            )
+            await client.models.list()
             return True
         except Exception:
             return False
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """List available models via the OpenAI-compatible /models endpoint."""
+        client = self._get_client()
+        try:
+            resp = await client.models.list()
+            return [
+                {
+                    "id": m.id,
+                    "object": "model",
+                    "owned_by": getattr(m, "owned_by", ""),
+                }
+                for m in resp.data
+            ]
+        except Exception:
+            logger.debug("Failed to list models for provider '%s'", self.name)
+            return []

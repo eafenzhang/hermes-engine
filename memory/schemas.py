@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MemoryItem(BaseModel):
@@ -11,8 +11,8 @@ class MemoryItem(BaseModel):
     summary: str | None = None
     source: str = "user"
     scope: str = "general"
-    importance: int = 1
-    tags: list[str] = []
+    importance: int = Field(default=1, ge=1, le=5)
+    tags: list[str] = Field(default_factory=list, max_length=10)
     created_at: float
     updated_at: float
     access_count: int = 0
@@ -20,20 +20,20 @@ class MemoryItem(BaseModel):
 
 
 class MemoryCreate(BaseModel):
-    content: str
+    content: str = Field(..., min_length=1)
     summary: str | None = None
     source: str = "user"
     scope: str = "general"
-    importance: int = 1
-    tags: list[str] = []
+    importance: int = Field(default=1, ge=1, le=5)
+    tags: list[str] = Field(default_factory=list, max_length=10)
 
 
 class MemoryUpdate(BaseModel):
-    content: str | None = None
+    content: str | None = Field(default=None, min_length=1)
     summary: str | None = None
     source: str | None = None
     scope: str | None = None
-    importance: int | None = None
+    importance: int | None = Field(default=None, ge=1, le=5)
     tags: list[str] | None = None
 
 

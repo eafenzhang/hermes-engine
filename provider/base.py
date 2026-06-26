@@ -67,6 +67,16 @@ class ProviderBase(ABC):
         """Stream a chat completion, yielding SSE‑friendly text chunks."""
         ...
 
+    @abstractmethod
+    async def list_models(self) -> list[dict[str, Any]]:
+        """List available models from this provider.
+
+        Returns a list of model descriptors, each containing at minimum
+        ``{"id": str, "object": "model"}``.  Returns an empty list when the
+        provider does not support programmatic model listing.
+        """
+        ...
+
     def validate_key(self) -> bool:
         """Return True if the configured API key looks valid."""
         return bool(self.api_key) and len(self.api_key) > 12

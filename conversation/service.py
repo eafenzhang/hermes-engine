@@ -17,8 +17,8 @@ class ConversationService:
     def __init__(self, db_path: Path) -> None:
         self.store = ConversationStore(db_path)
 
-    def create(self, title: str = "New Conversation", metadata: dict | None = None) -> dict[str, Any]:
-        return self.store.create(title, metadata)
+    def create(self, title: str = "New Conversation", metadata: dict | None = None, conv_id: str | None = None) -> dict[str, Any]:
+        return self.store.create(title, metadata, conv_id)
 
     def get(self, conv_id: str) -> dict[str, Any] | None:
         return self.store.get(conv_id)

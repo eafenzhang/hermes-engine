@@ -21,6 +21,10 @@ class AgentService:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict[str, Any]] | None = None,
+        enriched_context: str | None = None,
+        compress_context: bool = False,
+        compression_max_chars: int = 60000,
+        compression_keep_last: int = 6,
     ) -> dict[str, Any]:
         return await self.engine.run_turn(
             messages=messages,
@@ -29,6 +33,10 @@ class AgentService:
             tools=tools,
             temperature=temperature,
             max_tokens=max_tokens,
+            enriched_context=enriched_context,
+            compress_context=compress_context,
+            compression_max_chars=compression_max_chars,
+            compression_keep_last=compression_keep_last,
         )
 
     async def chat_stream(
@@ -39,6 +47,10 @@ class AgentService:
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict[str, Any]] | None = None,
+        enriched_context: str | None = None,
+        compress_context: bool = False,
+        compression_max_chars: int = 60000,
+        compression_keep_last: int = 6,
     ) -> AsyncIterator[str]:
         async for chunk in self.engine.run_turn_stream(
             messages=messages,
@@ -47,5 +59,9 @@ class AgentService:
             tools=tools,
             temperature=temperature,
             max_tokens=max_tokens,
+            enriched_context=enriched_context,
+            compress_context=compress_context,
+            compression_max_chars=compression_max_chars,
+            compression_keep_last=compression_keep_last,
         ):
             yield chunk

@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from memory.store import SQLiteStore
+if TYPE_CHECKING:
+    from memory.store import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +34,23 @@ class Curator:
       pass, asks an LLM to cluster a batch of active memories into concise
       summaries and de-duplicated tags. Falls back to deterministic-only on
       any error (no provider configured, API failure, unparseable output).
+
+    The ``_global_message_count`` class attribute is a shared counter that
+    persists across per-request ``MemoryService`` / ``Curator`` instances,
+    allowing ``record_message()`` calls from the agent router to trigger
+    auto-curation after the configured ``interval_messages``.
     """
 
     # Cap on the number of memories handed to the LLM per consolidation batch.
     _LLM_BATCH_SIZE = 25
 
+    # Shared counter — survives per-request instance creation so that
+    # ``record_message()`` calls from the agent flow accumulate correctly.
+    _global_message_count: int = 0
+
     def __init__(
         self,
-        store: SQLiteStore,
+        store: "SQLiteStore",
         interval_messages: int = 10,
         enabled: bool = True,
         llm_provider: str = "anthropic",
@@ -51,16 +61,21 @@ class Curator:
         self.enabled = enabled
         self.llm_provider = llm_provider
         self.llm_model = llm_model
-        self._message_count = 0
         self._last_run_at: float | None = None
 
     def should_run(self) -> bool:
         if not self.enabled:
             return False
-        return self._message_count >= self.interval_messages
+        return Curator._global_message_count >= self.interval_messages
 
-    def record_message(self) -> None:
-        self._message_count += 1
+    @classmethod
+    def record_message(cls) -> None:
+        """Record that a message was sent (called from agent turn handler).
+
+        Uses a class-level counter so that the count survives across
+        per-request ``Curator`` instances created by the DI container.
+        """
+        cls._global_message_count += 1
 
     async def run(self, use_llm: bool = False) -> dict[str, Any]:
         """Execute one curation pass.
@@ -70,8 +85,8 @@ class Curator:
         follows; any failure there is logged and silently skipped so the
         deterministic result remains valid.
         """
-        self._message_count = 0
         self._last_run_at = time.time()
+        Curator._global_message_count = 0  # reset the shared counter
         report: dict[str, Any] = {
             "ran_at": self._last_run_at,
             "archived": 0,
@@ -96,6 +111,10 @@ class Curator:
                 report["llm_error"] = str(exc)
                 logger.warning("LLM consolidation skipped: %s", exc)
 
+        # ── Phase 3: usage-based grading (active → stale → archived) ─────
+        graded = self._grade_memories()
+        report["graded"] = graded
+
         logger.info(
             "Curator run complete — archived=%d consolidated=%d total=%d use_llm=%s",
             report["archived"], report["consolidated"], total, use_llm,
@@ -105,27 +124,31 @@ class Curator:
     # ── Deterministic phase ──────────────────────────────────────────────
 
     def _archive_stale_memories(self) -> tuple[int, int]:
-        """Archive old, low-importance memories. Returns (archived, total)."""
-        now = time.time()
-        archived = 0
-        total = 0
-        offset = 0
-        page_size = 200
-        while True:
-            batch, _ = self.store.list_memories(limit=page_size, offset=offset)
-            if not batch:
-                break
-            total += len(batch)
-            for mem in batch:
-                age_days = (now - mem["updated_at"]) / 86400
-                if age_days > 90 and mem.get("importance", 1) <= 2 and mem.get("scope") != "archived":
-                    self.store.update_memory(mem["id"], scope="archived")
-                    archived += 1
-                elif age_days > 30 and mem.get("importance", 1) <= 1:
-                    self.store.update_memory(mem["id"], scope="archived")
-                    archived += 1
-            offset += page_size
-        return archived, total
+        """Archive old, low-importance memories via a single SQL pass.
+
+        Delegates to ``SQLiteStore.archive_stale_memories`` which performs a
+        direct ``UPDATE … WHERE …`` query — O(1) writes regardless of store
+        size, instead of the previous O(N) pagination scan.
+        """
+        return self.store.archive_stale_memories(time.time())
+
+    # ── Grading phase ──────────────────────────────────────────────────
+
+    def _grade_memories(self) -> int:
+        """Move low-score memories through lifecycle: active → stale → archived.
+
+        Scoring: ``score = use_count * 2 + view_count``
+
+        - score < 2 AND untouched 30d → scope = 'stale'
+        - score == 0 AND untouched 90d → scope = 'archived'
+
+        Returns the number of memories graded.  Only operates on non-archived
+        memories with scope != 'archived'.
+        """
+        return self.store.apply_grading(
+            stale_days=30,
+            archive_days=90,
+        )
 
     # ── LLM-assisted phase ───────────────────────────────────────────────
 
@@ -251,7 +274,7 @@ class Curator:
         return {
             "enabled": self.enabled,
             "interval_messages": self.interval_messages,
-            "message_count": self._message_count,
+            "message_count": Curator._global_message_count,
             "last_run_at": self._last_run_at,
             "llm_provider": self.llm_provider,
             "llm_model": self.llm_model,

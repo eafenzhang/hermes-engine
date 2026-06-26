@@ -17,6 +17,31 @@ from shared.errors import ServiceError
 
 logger = logging.getLogger(__name__)
 
+# Exceptions that are safe to catch and convert to SSE error events in the
+# streaming path.  Deliberately excludes asyncio.CancelledError, KeyboardInterrupt,
+# SystemExit, and GeneratorExit — those must propagate so the event loop and
+# process can shut down cleanly.
+try:
+    import httpx
+    _STREAMABLE_ERRORS: tuple[type[BaseException], ...] = (
+        ConnectionError,
+        TimeoutError,
+        ValueError,
+        KeyError,
+        TypeError,
+        OSError,
+        httpx.HTTPError,
+    )
+except ImportError:
+    _STREAMABLE_ERRORS = (
+        ConnectionError,
+        TimeoutError,
+        ValueError,
+        KeyError,
+        TypeError,
+        OSError,
+    )
+
 
 class AgentEngine:
     """Core agent runtime — manages conversation turns, context, and streaming.
@@ -29,18 +54,22 @@ class AgentEngine:
         self,
         default_provider: str = "anthropic",
         default_model: str = "claude-sonnet-4-20250514",
+        system_prompt: str | None = None,
     ) -> None:
         self.default_provider = default_provider
         self.default_model = default_model
-        self.system_prompt = self._build_system_prompt()
+        self.system_prompt = system_prompt or self._build_default_system_prompt()
 
-    def _build_system_prompt(self) -> str:
-        """Build the core system prompt for the agent."""
+    @staticmethod
+    def _build_default_system_prompt() -> str:
+        """Build the default system prompt for the agent."""
         return (
             "You are Hermes Engine, a helpful AI assistant with self-evolution capabilities. "
             "You can use tools, manage memories, create skills, and maintain context across conversations. "
             "When given a task, think step by step and use available tools to accomplish it."
         )
+
+    _build_system_prompt = _build_default_system_prompt  # back-compat alias
 
     async def run_turn(
         self,
@@ -50,8 +79,19 @@ class AgentEngine:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        enriched_context: str | None = None,
+        compress_context: bool = False,
+        compression_max_chars: int = 60000,
+        compression_keep_last: int = 6,
     ) -> dict[str, Any]:
         """Execute a single conversation turn (non-streaming).
+
+        *enriched_context* is optional extra content injected into the system
+        prompt (e.g. relevant memories and skills built by the router layer).
+
+        When *compress_context* is True and the message list exceeds
+        *compression_max_chars* characters, middle turns are lossy-summarised
+        via an LLM call before this turn executes.
 
         Raises ServiceError when the provider is unavailable or the call fails.
         """
@@ -65,7 +105,18 @@ class AgentEngine:
                 code="PROVIDER_UNAVAILABLE",
             )
 
-        full_messages = self._prepare_messages(messages)
+        # ── Context compression (before enrichment) ──────────────────────
+        if compress_context:
+            from shared.context_compressor import compress_messages
+            messages = await compress_messages(
+                messages,
+                provider_name=provider_name,
+                model=model,
+                max_chars=compression_max_chars,
+                keep_last=compression_keep_last,
+            )
+
+        full_messages = self._prepare_messages(messages, enriched_context)
 
         try:
             result = await provider.chat_completion(
@@ -95,6 +146,10 @@ class AgentEngine:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        enriched_context: str | None = None,
+        compress_context: bool = False,
+        compression_max_chars: int = 60000,
+        compression_keep_last: int = 6,
     ) -> AsyncIterator[str]:
         """Execute a single conversation turn (SSE streaming).
 
@@ -109,7 +164,18 @@ class AgentEngine:
             yield f"data: {json.dumps({'type': 'error', 'content': f'Provider {provider_name} not available'})}\n\n"
             return
 
-        full_messages = self._prepare_messages(messages)
+        # ── Context compression (before enrichment) ──────────────────────
+        if compress_context:
+            from shared.context_compressor import compress_messages
+            messages = await compress_messages(
+                messages,
+                provider_name=provider_name,
+                model=model,
+                max_chars=compression_max_chars,
+                keep_last=compression_keep_last,
+            )
+
+        full_messages = self._prepare_messages(messages, enriched_context)
 
         try:
             async for chunk in provider.chat_completion_stream(  # type: ignore[attr-defined]
@@ -120,13 +186,24 @@ class AgentEngine:
                 tools=tools,
             ):
                 yield chunk
-        except Exception as exc:
+        except (ServiceError,) + _STREAMABLE_ERRORS as exc:
             logger.exception("Provider '%s' stream call failed", provider_name)
             yield f"data: {json.dumps({'type': 'error', 'content': f'Provider error: {exc}'})}\n\n"
 
-    def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Ensure system prompt is present in the message list."""
+    def _prepare_messages(
+        self,
+        messages: list[dict[str, Any]],
+        enriched_context: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Ensure system prompt is present, with optional enriched context.
+
+        When *enriched_context* is provided, it is appended to the system
+        prompt so the agent can draw on relevant memories and skills.
+        """
+        system = self.system_prompt
+        if enriched_context:
+            system = system + "\n\n" + enriched_context
         has_system = any(m.get("role") == "system" for m in messages)
         if not has_system:
-            return [{"role": "system", "content": self.system_prompt}, *messages]
+            return [{"role": "system", "content": system}, *messages]
         return messages

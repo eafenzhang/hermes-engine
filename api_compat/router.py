@@ -35,9 +35,21 @@ router = APIRouter(tags=["openai-compat"])
 _MODEL_PROVIDER_RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"^claude"), "anthropic"),
     (re.compile(r"^gpt"), "openai"),
-    (re.compile(r"^o\d"), "openai"),      # o1, o3, o4-mini
+    (re.compile(r"^o\d"), "openai"),          # o1, o3, o4-mini
     (re.compile(r"^gemini"), "gemini"),
-    (re.compile(r"^deepseek"), "openai"),  # DeepSeek uses OpenAI-compatible API
+    # Chinese AI providers
+    (re.compile(r"^deepseek"), "deepseek"),
+    (re.compile(r"^moonshot"), "moonshot"),
+    (re.compile(r"^kimi"), "moonshot"),        # Kimi is the product name
+    (re.compile(r"^glm"), "zhipu"),
+    (re.compile(r"^zhipu"), "zhipu"),
+    (re.compile(r"^chatglm"), "zhipu"),
+    (re.compile(r"^qwen"), "qwen"),
+    (re.compile(r"^mimo"), "xiaomi"),
+    (re.compile(r"^abab"), "minimax"),
+    (re.compile(r"^minimax"), "minimax"),
+    # Anthropic‑compatible proxy / gateway
+    (re.compile(r"^ac-"), "anthropic_compat"),
 ]
 
 

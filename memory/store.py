@@ -197,3 +197,74 @@ class SQLiteStore(SQLiteBase):
         else:
             row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
         return row[0] if row else 0
+
+    def archive_stale_memories(self, now: float) -> tuple[int, int]:
+        """Archive stale, low-importance memories in a single SQL pass.
+
+        Returns ``(archived_count, total_count)``.  Much faster than loading
+        every memory into Python and filtering there — important for large
+        memory stores.
+        """
+        conn = self._get_conn()
+        # (90 days in seconds, 30 days in seconds)
+        cutoff_90d = now - 90 * 86400
+        cutoff_30d = now - 30 * 86400
+
+        # Archives: scope != 'archived' AND (
+        #   (updated_at < 90 days ago AND importance <= 2) OR
+        #   (updated_at < 30 days ago AND importance <= 1)
+        # )
+        cursor = conn.execute(
+            """UPDATE memories SET scope = 'archived', updated_at = ?
+               WHERE scope != 'archived'
+                 AND (
+                     (updated_at < ? AND importance <= 2)
+                     OR
+                     (updated_at < ? AND importance <= 1)
+                 )""",
+            (now, cutoff_90d, cutoff_30d),
+        )
+        conn.commit()
+        archived = cursor.rowcount
+
+        # Total count
+        count_row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
+        total = count_row[0] if count_row else 0
+        return archived, total
+
+    def apply_grading(self, stale_days: int = 30, archive_days: int = 90) -> int:
+        """Apply usage-based grading: active → stale → archived.
+
+        Uses existing ``access_count`` and ``last_accessed_at`` columns.
+        Memories with access_count=0 and untouched for *archive_days* are
+        archived; those untouched for *stale_days* are marked stale.
+
+        Returns the total number of rows updated.
+        """
+        conn = self._get_conn()
+        now = time.time()
+        stale_cutoff = now - stale_days * 86400
+        archive_cutoff = now - archive_days * 86400
+
+        # Archive: never accessed AND untouched beyond archive threshold
+        c1 = conn.execute(
+            """UPDATE memories SET scope = 'archived', updated_at = ?
+               WHERE scope NOT IN ('archived', 'stale')
+                 AND access_count = 0
+                 AND (last_accessed_at IS NULL OR last_accessed_at < ?)""",
+            (now, archive_cutoff),
+        )
+        archived_count = c1.rowcount
+
+        # Stale: low access AND untouched beyond stale threshold
+        c2 = conn.execute(
+            """UPDATE memories SET scope = 'stale', updated_at = ?
+               WHERE scope = 'active'
+                 AND access_count <= 1
+                 AND (last_accessed_at IS NULL OR last_accessed_at < ?)""",
+            (now, stale_cutoff),
+        )
+        stale_count = c2.rowcount
+
+        conn.commit()
+        return archived_count + stale_count

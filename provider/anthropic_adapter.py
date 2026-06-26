@@ -19,9 +19,15 @@ logger = logging.getLogger(__name__)
 
 
 class AnthropicAdapter(ProviderBase):
-    """Provider adapter for Anthropic's Messages API."""
+    """Provider adapter for Anthropic's Messages API.
+
+    The ``_connectivity_model`` class attribute is used by
+    :meth:`check_connectivity` and can be overridden on instances to match
+    the models available through a proxy / gateway.
+    """
 
     name = "anthropic"
+    _connectivity_model: str = "claude-sonnet-4-20250514"
 
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         super().__init__(api_key, base_url)
@@ -112,10 +118,27 @@ class AnthropicAdapter(ProviderBase):
         client = self._get_client()
         try:
             await client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=self._connectivity_model,
                 max_tokens=1,
                 messages=[{"role": "user", "content": "ping"}],
             )
             return True
         except Exception:
             return False
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """List available models via the Anthropic Messages API.
+
+        Note: the Anthropic SDK does not expose a ``models.list()`` method
+        — this returns an empty list when listing is unsupported.
+        """
+        client = self._get_client()
+        try:
+            resp = await client.models.list()  # type: ignore[union-attr]
+            return [
+                {"id": m.id, "object": "model"}
+                for m in resp.data
+            ]
+        except Exception:
+            logger.debug("Model listing not supported for Anthropic provider '%s'", self.name)
+            return []

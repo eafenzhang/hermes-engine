@@ -8,6 +8,21 @@ build-backend = "setuptools.build_meta"
 name = "hermes-engine"
 version = "0.1.0"
 description = "Feature-based FastAPI backend exposing Hermes Agent core capabilities via REST + WebSocket"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "eafenzhang"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
@@ -26,6 +41,8 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "mypy>=1.0.0",
+    "ruff>=0.8.0",
+    "pre-commit>=3.0.0",
 ]
 observability = [
     "python-json-logger>=3.0.0",

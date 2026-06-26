@@ -27,7 +27,11 @@ def get_agent_service(request: Request):
     from agent.service import AgentService
 
     settings: Settings = request.app.state.settings
-    return AgentService(AgentEngine())
+    engine = AgentEngine(
+        default_provider=settings.curator_provider,  # reuse curator provider as default
+        default_model=settings.curator_model,
+    )
+    return AgentService(engine)
 
 
 # ── Memory ──────────────────────────────────────────────────────────────

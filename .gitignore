@@ -14,8 +14,10 @@ venv/
 .vscode/
 .idea/
 
-# Build
+# Build / dist
 *.egg-info/
+dist/
+build/
 
 # Data
 *.db
@@ -25,3 +27,16 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Cache
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Coverage
+coverage.xml
+.coverage
+htmlcov/
+
+# Logs
+*.log

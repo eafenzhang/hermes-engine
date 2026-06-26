@@ -56,6 +56,9 @@ class MockProvider(ProviderBase):
     def validate_key(self) -> bool:
         return True
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
 
 @pytest.fixture
 def store(tmp_path: Path) -> SQLiteStore:

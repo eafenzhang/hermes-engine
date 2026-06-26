@@ -131,3 +131,18 @@ class GeminiAdapter(ProviderBase):
         except Exception as exc:
             logger.debug("Gemini connectivity check failed: %s", exc)
             return False
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """List available models via the Gemini API."""
+        client = self._get_client()
+        try:
+            resp = await client.models.list()
+            models: list[dict[str, Any]] = []
+            async for m in resp:
+                name = getattr(m, "name", "")
+                if name:
+                    models.append({"id": name, "object": "model"})
+            return models
+        except Exception:
+            logger.debug("Model listing failed for Gemini provider")
+            return []

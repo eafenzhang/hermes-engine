@@ -26,7 +26,7 @@ from shared.errors import (
     unhandled_exception_handler,
 )
 from shared.event import bus
-from shared.models import HealthResponse
+from shared.models import ApiResponse, HealthResponse
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,10 @@ async def lifespan(app: FastAPI):
     from provider.service import init_providers
     init_providers(settings)
 
+    # ── Initialise model cache TTL ────────────────────────────────────────
+    from shared.model_cache import model_cache
+    model_cache._ttl = settings.model_cache_ttl
+
     # ── Register routers (services are injected per-request via Depends) ──
     import agent.router as _agent_router_mod
     import conversation.router as _conv_router_mod
@@ -107,13 +111,67 @@ async def lifespan(app: FastAPI):
     app.include_router(_tools_router_mod.router)
     app.include_router(_mcp_router_mod.router)
 
+    # ── Register OpenAI-compatible endpoint ────────────────────────────────
+    import api_compat.router as _api_compat_router_mod
+    app.include_router(_api_compat_router_mod.router)
+
     # ── Register built-in tools ───────────────────────────────────────────
     from tools.builtin import register_all as register_builtin_tools
     register_builtin_tools()
 
+    # ── Register browser tools ──────────────────────────────────────────
+    if settings.browser_enabled:
+        from tools.executor import executor as _tool_executor
+        from tools.browser import WEB_FETCH_SCHEMA, WEB_SEARCH_SCHEMA, web_fetch, web_search
+        _tool_executor.register("web_fetch", web_fetch, WEB_FETCH_SCHEMA)
+        _tool_executor.register("web_search", web_search, WEB_SEARCH_SCHEMA)
+
     # ── Register extra allowed commands from settings ────────────────────
     from tools.builtin.execute_command import register_extra_commands
     register_extra_commands(settings.extra_allowed_commands)
+
+    # ── Register scheduler, gateway, trajectory routers ─────────────────
+    if settings.cron_enabled:
+        import shared.scheduler_router as _cron_mod
+        app.include_router(_cron_mod.router)
+
+    if settings.gateway_enabled:
+        import gateway as _gateway_mod
+        from fastapi import APIRouter as _GwRouter
+        # Gateway webhook endpoint
+        _gw = _GwRouter(prefix="/api/gateway", tags=["gateway"])
+
+        @_gw.post("/webhook")
+        async def _webhook(payload: dict):
+            adapter = _gateway_mod.WebhookAdapter()
+            result = await adapter.handle_webhook(payload)
+            return ApiResponse(data=result)
+
+        app.include_router(_gw)
+
+    if settings.trajectories_enabled:
+        import shared.trajectory_router as _traj_mod
+        app.include_router(_traj_mod.router)
+
+    # ── Session router (stateful multi-turn) ────────────────────────────
+    if settings.session_enabled:
+        import shared.session_router as _sess_mod
+        app.include_router(_sess_mod.router)
+
+    # ── Plugin loader ────────────────────────────────────────────────────
+    if settings.plugins_enabled:
+        from shared.plugin import PluginLoader
+        loader: PluginLoader = PluginLoader(extra_dirs=settings.plugins_dirs)
+        names = loader.discover()
+        for name in names:
+            loader.load(name)
+        app.state.plugin_loader = loader
+
+    # ── Start cron scheduler ────────────────────────────────────────────
+    if settings.cron_enabled:
+        from shared.scheduler import get_scheduler
+        import asyncio as _asyncio
+        _scheduler_task = _asyncio.create_task(get_scheduler().start())
 
     from provider.registry import registry as provider_registry
     logger.info(
@@ -122,6 +180,15 @@ async def lifespan(app: FastAPI):
         settings.debug,
         provider_registry.count,
     )
+
+    # ── Start Redis event bus listener if backend is redis ────────────
+    import os as _os
+    if _os.environ.get("HERMES_EVENT_BACKEND", "").strip().lower() == "redis":
+        try:
+            await bus.start()
+        except Exception:
+            logger.warning("Failed to start Redis event listener — continuing")
+
     yield
 
     # ── Cleanup (guaranteed to run, even on exception) ─────────────────────
@@ -132,10 +199,28 @@ async def lifespan(app: FastAPI):
         logger.exception("MCP bridge cleanup failed — continuing shutdown")
 
     try:
-        from shared.event import bus
         await bus.backend.close()
     except Exception:
         logger.exception("EventBus backend cleanup failed — continuing shutdown")
+
+    try:
+        from shared.sqlite_base import SQLiteBase
+        SQLiteBase.close_all()
+    except Exception:
+        logger.exception("SQLite connection cleanup failed — continuing shutdown")
+
+    try:
+        from shared.scheduler import get_scheduler
+        get_scheduler().stop()
+    except Exception:
+        logger.exception("Scheduler stop failed — continuing shutdown")
+
+    try:
+        _pl = getattr(app.state, "plugin_loader", None)
+        if _pl is not None:
+            _pl.unload_all()
+    except Exception:
+        logger.exception("Plugin unload failed — continuing shutdown")
 
     logger.info("Hermes Engine shut down.")
 
@@ -159,10 +244,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── CORS ──────────────────────────────────────────────────────────────
     if settings.cors_origins:
+        # Per the CORS spec, ``Access-Control-Allow-Origin: *`` is incompatible
+        # with ``Access-Control-Allow-Credentials: true``.  Browsers reject the
+        # response when both are present.  We only enable credentials when a
+        # concrete (non-wildcard) origin list is configured.
+        has_wildcard = "*" in settings.cors_origins
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origins,
-            allow_credentials=True,
+            allow_credentials=not has_wildcard,
             allow_methods=["*"],
             allow_headers=["*"],
         )
@@ -184,6 +274,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ── WebSocket event bus ──────────────────────────────────────────────
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
+        # Optional token auth via query param: /ws?token=my-secret
+        if not settings.local_mode:
+            token = ws.query_params.get("token", "")
+            if not token or token != settings.api_token:
+                await ws.close(code=4001, reason="Unauthorized")
+                return
+
         await ws.accept()
         conn_id = str(uuid.uuid4())
         bus.subscribe_ws(conn_id, ws)

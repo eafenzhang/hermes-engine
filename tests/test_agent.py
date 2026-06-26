@@ -48,6 +48,9 @@ class AgentMockProvider(ProviderBase):
     def validate_key(self) -> bool:
         return True
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
 
 class StreamingOnlyProvider(ProviderBase):
     """Provider that only supports streaming (non-streaming raises)."""
@@ -79,6 +82,9 @@ class StreamingOnlyProvider(ProviderBase):
 
     def validate_key(self) -> bool:
         return True
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
 
 
 @pytest.fixture(autouse=True)

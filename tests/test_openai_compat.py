@@ -26,7 +26,20 @@ import pytest
         ("gpt-4o-mini", "openai"),
         ("o4-mini", "openai"),
         ("gemini-2.5-pro", "gemini"),
-        ("deepseek-chat", "openai"),
+        # Chinese AI providers
+        ("deepseek-chat", "deepseek"),
+        ("deepseek-reasoner", "deepseek"),
+        ("moonshot-v1-8k", "moonshot"),
+        ("kimi-latest", "moonshot"),
+        ("glm-4", "zhipu"),
+        ("glm-4-flash", "zhipu"),
+        ("zhipu-glm", "zhipu"),
+        ("chatglm-turbo", "zhipu"),
+        ("qwen-turbo", "qwen"),
+        ("qwen-max", "qwen"),
+        ("mimo-pro", "xiaomi"),
+        ("abab6.5s-chat", "minimax"),
+        ("minimax-text-01", "minimax"),
         ("unknown-model", "anthropic"),  # fallback
     ],
 )

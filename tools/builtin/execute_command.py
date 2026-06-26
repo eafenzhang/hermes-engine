@@ -13,14 +13,35 @@ Security model (whitelist + sandbox):
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ── Terminal backend (lazy init) ──────────────────────────────────────
+_backend: Any = None
+_backend_name: str = ""
+
+
+def _get_backend() -> Any:
+    global _backend, _backend_name
+    if _backend is None:
+        import os as _os
+        backend_name = _os.environ.get("HERMES_TERMINAL_BACKEND", "local")
+        docker_img = _os.environ.get("HERMES_DOCKER_IMAGE", "python:3.12-slim")
+        from tools.terminal_backends import get_backend
+        _backend = get_backend(backend_name, docker_image=docker_img)
+        _backend_name = backend_name
+    return _backend
+
+
+def _get_backend_name() -> str:
+    _get_backend()
+    return _backend_name
 
 SCHEMA = {
     "description": "Execute a shell command and return its output. Use with caution.",
@@ -190,11 +211,16 @@ async def execute_command(
 
     The command must be in the whitelist and pass dangerous-pattern checks.
     Execution is scoped to the project root directory.
+
+    The resolved base-command path is substituted into the command string to
+    prevent PATH-injection attacks: even if a malicious actor tampers with
+    PATH, the real binary location from ``shutil.which`` is used.
     """
     # ── Step 1: resolve and validate the command ──
     resolved, blocked_reason = _resolve_command(command)
     if blocked_reason:
         return f"Error: {blocked_reason}"
+    assert resolved is not None  # guaranteed when blocked_reason is empty
 
     # ── Step 2: check dangerous patterns in the full command ──
     pattern_blocked = _check_dangerous_patterns(command)
@@ -215,30 +241,32 @@ async def execute_command(
         else:
             return f"Error: working directory not found: {cwd}"
 
-    # ── Step 4: execute ──
+    # ── Step 4: substitute resolved base command to prevent PATH injection ──
+    # Replace only the first token (the command name) with its fully-resolved
+    # path.  The rest of the command string (arguments, pipes, redirects) stays
+    # intact but still passes through the dangerous-pattern filter above.
+    tokens = command.strip().split()
+    base_name = os.path.basename(resolved)
+    # Build safe command: resolved path + remaining arguments
+    safe_command = str(resolved) + " " + " ".join(tokens[1:]) if len(tokens) > 1 else str(resolved)
+
+    # ── Step 5: execute via terminal backend ──────────────────────────
     logger.info(
-        "Executing command (cwd=%s, timeout=%ds): %s",
-        work_dir, timeout, command[:200],
+        "Executing command (cwd=%s, timeout=%ds, backend=%s): %s",
+        work_dir, timeout, _get_backend_name(), safe_command[:200],
     )
     env = _sanitise_env()
+
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        backend = _get_backend()
+        returncode, stdout, stderr = await backend.execute(
+            safe_command,
+            timeout=timeout,
             cwd=str(work_dir),
             env=env,
         )
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout,
-        )
-        output = ""
-        if stdout_bytes:
-            output += stdout_bytes.decode("utf-8", errors="replace")
-        if stderr_bytes:
-            output += "\n[stderr]\n" + stderr_bytes.decode("utf-8", errors="replace")
-        return output or "(no output)"
-    except asyncio.TimeoutError:
-        return f"Error: command timed out after {timeout}s"
+        if returncode != 0 and stderr:
+            return f"{stdout}\n[stderr]\n{stderr}" if stdout else f"[stderr]\n{stderr}"
+        return stdout or "(no output)"
     except Exception as exc:
         return f"Error executing command: {exc}"
