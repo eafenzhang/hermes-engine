@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from typing import Any, AsyncIterator
@@ -118,6 +119,27 @@ class AgentEngine:
 
         full_messages = self._prepare_messages(messages, enriched_context)
 
+        # ── Circuit breaker check ────────────────────────────────────────
+        from shared.circuit_breaker import circuits
+        breaker = circuits.get(provider_name)
+        if not breaker.allow_request():
+            # Try fallback chain
+            fallback_chain_str = os.environ.get("HERMES_FALLBACK_CHAIN", "")
+            if fallback_chain_str:
+                from provider.fallback import try_with_fallback, build_fallback_chain
+                chain = build_fallback_chain(fallback_chain_str, model or "")
+                logger.info(
+                    "Circuit %s OPEN, trying fallback chain: %s",
+                    provider_name, chain,
+                )
+                return (await try_with_fallback(
+                    full_messages, chain, tools, temperature, max_tokens,
+                ))[0]
+            raise ServiceError(
+                f"Provider '{provider_name}' circuit is OPEN and no fallback configured",
+                code="CIRCUIT_OPEN",
+            )
+
         try:
             result = await provider.chat_completion(
                 messages=full_messages,
@@ -126,11 +148,24 @@ class AgentEngine:
                 max_tokens=max_tokens,
                 tools=tools,
             )
+            breaker.record_success()
         except ServiceError:
-            # Already a domain error — propagate unchanged.
+            breaker.record_failure()
             raise
         except Exception as exc:
+            breaker.record_failure()
             logger.exception("Provider '%s' call failed", provider_name)
+            # Try model fallback
+            model_fallback_str = os.environ.get("HERMES_MODEL_FALLBACK_CHAIN", "")
+            if model_fallback_str:
+                from provider.model_fallback import try_model_fallback
+                try:
+                    return await try_model_fallback(
+                        full_messages, provider_name,
+                        model_fallback_str.split(","), tools, temperature, max_tokens,
+                    )
+                except Exception:
+                    pass
             raise ServiceError(
                 f"Provider call failed: {exc}",
                 code="PROVIDER_ERROR",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from conversation.schemas import ConversationCreate, ConversationUpdate, MessageCreate
 from shared.dependencies import get_conversation_service
@@ -71,3 +71,36 @@ async def delete_conversation(conv_id: str, service=Depends(get_conversation_ser
         raise NotFoundError(f"Conversation {conv_id} not found")
     await bus.publish_domain("conversation", "deleted", data={"conversation_id": conv_id})
     return ApiResponse(message="Conversation deleted")
+
+
+@router.post("/{conv_id}/close")
+async def close_conversation(
+    conv_id: str,
+    request: Request,
+    service=Depends(get_conversation_service),
+):
+    """Close a conversation and generate an LLM summary."""
+    conv = service.get(conv_id)
+    if not conv:
+        raise NotFoundError(f"Conversation {conv_id} not found")
+
+    messages, _ = service.get_messages(conv_id, limit=200)
+    msgs = [{"role": m["role"], "content": m["content"]} for m in reversed(messages)][::-1]
+
+    from shared.conversation_summarizer import summarize_conversation
+    from shared.dependencies import get_settings
+
+    settings = request.app.state.settings
+    summary = await summarize_conversation(
+        msgs,
+        provider_name=settings.curator_provider,
+        model=settings.curator_model,
+    )
+
+    meta = dict(conv.get("metadata", {}))
+    meta["summary"] = summary
+    meta["closed"] = True
+    service.update(conv_id, metadata=meta)
+
+    await bus.publish_domain("conversation", "closed", data={"conversation_id": conv_id})
+    return ApiResponse(data={"summary": summary, "conversation_id": conv_id}, message="Conversation closed")

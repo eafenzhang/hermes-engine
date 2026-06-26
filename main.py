@@ -29,6 +29,7 @@ from shared.errors import (
 )
 from shared.event import bus
 from shared.models import ApiResponse, HealthResponse
+import asyncio as _asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,15 @@ _STREAM_HEADERS = {
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
 }
+
+
+async def _retry_loop(queue):
+    while True:
+        try:
+            await queue.process()
+        except Exception:
+            pass
+        await _asyncio.sleep(60)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -202,6 +212,37 @@ async def lifespan(app: FastAPI):
         import asyncio as _asyncio
         _asyncio.create_task(get_scheduler().start())
 
+    # ── Data cleaner (background TTL-based pruning) ──────────────────────
+    if settings.data_ttl_days > 0:
+        from shared.data_cleaner import DataCleaner
+        _cleaner = DataCleaner(
+            str(settings.db_path), ttl_days=settings.data_ttl_days,
+            interval_hours=settings.data_cleaner_interval_hours,
+        )
+        app.state.data_cleaner = _cleaner
+        _asyncio.create_task(_cleaner.start())
+
+    # ── Webhook retry processor ─────────────────────────────────────────
+    import gateway.retry as _retry_mod
+    _retry_queue = _retry_mod.RetryQueue(str(settings.db_path.parent / "retries.db"))
+    app.state.retry_queue = _retry_queue
+    _asyncio.create_task(_retry_loop(_retry_queue))
+
+    # ── Hot reload watcher ──────────────────────────────────────────────
+    if settings.hot_reload_enabled:
+        from shared.hot_reload import watch_env
+        _asyncio.create_task(watch_env(lambda: None))  # callback TBD
+
+    # ── Auto-backup (daily) ─────────────────────────────────────────────
+    if settings.auto_backup_enabled and settings.cron_enabled:
+        from shared.scheduler import get_scheduler as _gs2
+
+        async def _auto_backup():
+            from shared.db_maintenance import backup as _bk
+            _bk(str(settings.db_path))
+
+        _gs2().add_task("auto-backup", "0 3 * * *", _auto_backup)
+
     from provider.registry import registry as provider_registry
     logger.info(
         "Hermes Engine started — data_dir=%s debug=%s providers=%d",
@@ -347,6 +388,54 @@ def _register_routers(app: FastAPI, settings: Settings):
         app.include_router(_sess_mod.router)
         app.include_router(_sess_mod.router, prefix="/api/v1")
 
+    # ── Admin router (API keys, maintenance, audit) ──────────────────────
+    if settings.api_keys_enabled:
+        from fastapi import APIRouter as _AdminRouter
+        _admin = _AdminRouter(prefix="/api/admin", tags=["admin"])
+        from shared.api_keys import get_key_store
+        from shared.audit import get_audit
+        from shared.db_maintenance import backup, vacuum
+
+        _ks = get_key_store(str(settings.db_path.parent / "keys.db"))
+        _audit = get_audit(str(settings.db_path.parent / "audit.db"))
+
+        @_admin.post("/keys")
+        async def _create_key(data: dict):
+            key = _ks.create(
+                tenant_id=data.get("tenant_id", "default"),
+                name=data.get("name", ""),
+                scopes=data.get("scopes"),
+            )
+            _audit.log("api_key", "created", actor="admin", tenant_id=data.get("tenant_id", "default"))
+            return ApiResponse(data={"id": key["key_hash"][:16], "key": key["key"], "scopes": key["scopes"]}, message="Key created")
+
+        @_admin.get("/keys")
+        async def _list_keys():
+            return ApiResponse(data=_ks.list())
+
+        @_admin.delete("/keys/{key_id}")
+        async def _delete_key(key_id: str):
+            _ks.delete(key_id)
+            _audit.log("api_key", "deleted", actor="admin")
+            return ApiResponse(message="Key deleted")
+
+        @_admin.post("/maintenance/backup")
+        async def _run_backup():
+            r = backup(str(settings.db_path))
+            return ApiResponse(data=r)
+
+        @_admin.post("/maintenance/vacuum")
+        async def _run_vacuum():
+            r = vacuum(str(settings.db_path))
+            return ApiResponse(data=r)
+
+        @_admin.get("/audit")
+        async def _audit_logs():
+            return ApiResponse(data=_audit.query(limit=100))
+
+        app.include_router(_admin)
+        app.include_router(_admin, prefix="/api/v1")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # App factory
@@ -370,8 +459,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     setup_tracing(app)
 
     # ── Middleware (order matters — Starlette LIFO) ──────────────────────
-    # Outermost → Innermost: RequestID → CORS → RateLimit → Auth → Logging
+    # Outermost → Innermost: RequestID → Idempotency → CORS → Tenant →
+    #   RateLimit → Auth → Logging → ResponseCache
     app.add_middleware(RequestIDMiddleware)
+    if settings.idempotency_enabled:
+        from shared.idempotency import IdempotencyHTTPMiddleware
+        app.add_middleware(IdempotencyHTTPMiddleware)
     if settings.cors_origins:
         has_wildcard = "*" in settings.cors_origins
         app.add_middleware(
@@ -381,9 +474,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_methods=["*"],
             allow_headers=["*"],
         )
+    from shared.tenant import TenantMiddleware
+    app.add_middleware(TenantMiddleware)
     app.add_middleware(RateLimitMiddleware, settings=settings)
     app.add_middleware(AuthMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
+    if settings.response_cache_enabled:
+        from shared.response_cache import CacheMiddleware
+        app.add_middleware(CacheMiddleware)
 
     # ── Exception handlers ───────────────────────────────────────────────
     app.add_exception_handler(ServiceError, service_error_handler)  # type: ignore[arg-type]

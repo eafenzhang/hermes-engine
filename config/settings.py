@@ -125,6 +125,38 @@ class Settings(BaseSettings):
     keep_alive_timeout: int = 5
     backlog: int = 2048
 
+    # ── Circuit breaker ──────────────────────────────────────────────────
+    circuit_breaker_threshold: int = 5  # failures to open
+    circuit_breaker_reset_sec: float = 30.0  # seconds before half-open
+
+    # ── Provider fallback ────────────────────────────────────────────────
+    provider_fallback_enabled: bool = True
+    fallback_chain: str = ""  # "anthropic:claude-sonnet-4,openai:gpt-4o"
+    model_fallback_chain: str = ""  # "gpt-4o,gpt-4o-mini,claude-sonnet-4"
+
+    # ── Idempotency ──────────────────────────────────────────────────────
+    idempotency_enabled: bool = True
+    idempotency_ttl_hours: int = 24
+
+    # ── API Keys ─────────────────────────────────────────────────────────
+    api_keys_enabled: bool = True
+
+    # ── Data governance ──────────────────────────────────────────────────
+    data_ttl_days: int = 90  # auto-delete memories+convs older than this
+    data_cleaner_interval_hours: float = 24.0
+    auto_backup_enabled: bool = True
+
+    # ── Hot reload ───────────────────────────────────────────────────────
+    hot_reload_enabled: bool = False  # experimental
+
+    # ── Response cache ───────────────────────────────────────────────────
+    response_cache_enabled: bool = True
+    response_cache_ttl: float = 300.0
+
+    # ── Tool approval ────────────────────────────────────────────────────
+    tool_approval_enabled: bool = False
+    tool_approval_required_tools: list[str] = ["write_file", "execute_command"]
+
     @property
     def local_mode(self) -> bool:
         """Whether authentication is skipped (desktop / local embedding).
